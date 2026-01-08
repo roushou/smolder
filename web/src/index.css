@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+@theme {
+	/* Background layers - subtle depth */
+	--color-bg-base: #09090b;
+	--color-bg-elevated: #111113;
+	--color-bg-surface: #18181b;
+	--color-bg-muted: #27272a;
+
+	/* Borders - subtle separation */
+	--color-border: #27272a;
+	--color-border-subtle: #1f1f23;
+
+	/* Text hierarchy */
+	--color-text: #fafafa;
+	--color-text-secondary: #a1a1aa;
+	--color-text-muted: #71717a;
+	--color-text-faint: #52525b;
+
+	/* Accent - emerald/teal inspired by Medusa */
+	--color-accent: #10b981;
+	--color-accent-hover: #34d399;
+	--color-accent-muted: #10b98120;
+
+	/* Semantic */
+	--color-success: #22c55e;
+	--color-warning: #f59e0b;
+	--color-error: #ef4444;
+
+	/* Font */
+	--font-sans:
+		"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	--font-mono: "JetBrains Mono", "Fira Code", "SF Mono", monospace;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html {
+	font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+body {
+	font-family: var(--font-sans);
+	background-color: var(--color-bg-base);
+	color: var(--color-text);
+	margin: 0;
+	line-height: 1.6;
+}
+
+#root {
+	min-height: 100vh;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+	background: var(--color-border);
+	border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: var(--color-text-faint);
+}
+
+/* Selection */
+::selection {
+	background: var(--color-accent-muted);
+	color: var(--color-accent);
+}
+
+/* Focus states */
+:focus-visible {
+	outline: 2px solid var(--color-accent);
+	outline-offset: 2px;
+}
+
+/* Code styling */
+code {
+	font-family: var(--font-mono);
+	font-size: 0.875em;
+}
+
+/* Smooth animations */
+@keyframes fadeIn {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.5;
+	}
+}
+
+.animate-fade-in {
+	animation: fadeIn 0.3s ease-out;
+}
+
+.animate-pulse-subtle {
+	animation: pulse 2s ease-in-out infinite;
+}

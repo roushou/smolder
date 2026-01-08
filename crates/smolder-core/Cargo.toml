@@ -1,0 +1,16 @@
+[package]
+name = "smolder-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core library for Smolder - contract registry and interaction platform"
+readme = "README.md"
+repository = "https://github.com/roushou/smolder"
+
+[dependencies]
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+alloy = { workspace = true }
+thiserror = { workspace = true }
+keyring = { workspace = true }
