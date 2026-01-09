@@ -29,11 +29,11 @@ pub fn encrypt_private_key(private_key: &str) -> Result<Vec<u8>, Error> {
     // Generate random nonce
     let mut nonce_bytes = [0u8; NONCE_SIZE];
     rand::thread_rng().fill(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
     // Encrypt
     let ciphertext = cipher
-        .encrypt(nonce, private_key.as_bytes())
+        .encrypt(&nonce, private_key.as_bytes())
         .map_err(|e| Error::Keyring(format!("Encryption failed: {}", e)))?;
 
     // Prepend nonce to ciphertext
@@ -55,11 +55,14 @@ pub fn decrypt_private_key(encrypted_data: &[u8]) -> Result<String, Error> {
 
     // Split nonce and ciphertext
     let (nonce_bytes, ciphertext) = encrypted_data.split_at(NONCE_SIZE);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce_array: [u8; NONCE_SIZE] = nonce_bytes
+        .try_into()
+        .map_err(|_| Error::Keyring("Invalid nonce length".into()))?;
+    let nonce = Nonce::from(nonce_array);
 
     // Decrypt
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|e| Error::Keyring(format!("Decryption failed: {}", e)))?;
 
     String::from_utf8(plaintext).map_err(|e| Error::Keyring(format!("Invalid UTF-8: {}", e)))
