@@ -1,11 +1,12 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
     routing::get,
     Json, Router,
 };
+use smolder_core::Error;
 use smolder_db::{Network, NetworkRepository};
 
+use crate::server::error::ApiError;
 use crate::server::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -14,27 +15,18 @@ pub fn router() -> Router<AppState> {
         .route("/networks/{name}", get(get_by_name))
 }
 
-async fn list(State(state): State<AppState>) -> Result<Json<Vec<Network>>, (StatusCode, String)> {
-    let networks = NetworkRepository::list(state.db())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
+async fn list(State(state): State<AppState>) -> Result<Json<Vec<Network>>, ApiError> {
+    let networks = NetworkRepository::list(state.db()).await?;
     Ok(Json(networks))
 }
 
 async fn get_by_name(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<Json<Network>, (StatusCode, String)> {
-    let network = NetworkRepository::get_by_name(state.db(), &name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+) -> Result<Json<Network>, ApiError> {
+    let network = NetworkRepository::get_by_name(state.db(), &name).await?;
 
-    match network {
-        Some(n) => Ok(Json(n)),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            format!("Network '{}' not found", name),
-        )),
-    }
+    network
+        .map(Json)
+        .ok_or_else(|| ApiError::from(Error::NetworkNotFound(name)))
 }

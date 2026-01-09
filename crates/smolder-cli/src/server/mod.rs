@@ -3,8 +3,6 @@ mod routes;
 mod state;
 mod static_files;
 
-#[allow(unused_imports)]
-pub use error::{ApiError, ApiResult};
 pub use state::AppState;
 
 use smolder_db::Database;

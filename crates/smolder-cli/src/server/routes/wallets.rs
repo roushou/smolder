@@ -5,9 +5,10 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use smolder_core::encrypt_private_key;
+use smolder_core::{encrypt_private_key, Error};
 use smolder_db::{NewWallet, Wallet, WalletRepository};
 
+use crate::server::error::ApiError;
 use crate::server::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -18,29 +19,20 @@ pub fn router() -> Router<AppState> {
         .route("/wallets/{name}", delete(remove))
 }
 
-async fn list(State(state): State<AppState>) -> Result<Json<Vec<Wallet>>, (StatusCode, String)> {
-    let wallets = WalletRepository::list(state.db())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
+async fn list(State(state): State<AppState>) -> Result<Json<Vec<Wallet>>, ApiError> {
+    let wallets = WalletRepository::list(state.db()).await?;
     Ok(Json(wallets))
 }
 
 async fn get_by_name(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<Json<Wallet>, (StatusCode, String)> {
-    let wallet = WalletRepository::get_by_name(state.db(), &name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+) -> Result<Json<Wallet>, ApiError> {
+    let wallet = WalletRepository::get_by_name(state.db(), &name).await?;
 
-    match wallet {
-        Some(w) => Ok(Json(w)),
-        None => Err((
-            StatusCode::NOT_FOUND,
-            format!("Wallet '{}' not found", name),
-        )),
-    }
+    wallet
+        .map(Json)
+        .ok_or_else(|| ApiError::from(Error::WalletNotFound(name)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +44,7 @@ struct CreateWalletRequest {
 async fn create(
     State(state): State<AppState>,
     Json(payload): Json<CreateWalletRequest>,
-) -> Result<Json<Wallet>, (StatusCode, String)> {
+) -> Result<Json<Wallet>, ApiError> {
     // Normalize private key
     let private_key = if payload.private_key.starts_with("0x") {
         payload.private_key.clone()
@@ -61,42 +53,36 @@ async fn create(
     };
 
     // Parse and validate private key, get address
-    let signer: alloy::signers::local::PrivateKeySigner = private_key.parse().map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("Invalid private key: {}", e),
-        )
-    })?;
+    let signer: alloy::signers::local::PrivateKeySigner = private_key
+        .parse()
+        .map_err(|e| ApiError::from(Error::invalid_param("private_key", format!("{}", e))))?;
 
     let address = format!("{:?}", signer.address());
 
     // Check if wallet name already exists
-    let existing = WalletRepository::get_by_name(state.db(), &payload.name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    if existing.is_some() {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("Wallet '{}' already exists", payload.name),
-        ));
+    if WalletRepository::get_by_name(state.db(), &payload.name)
+        .await?
+        .is_some()
+    {
+        return Err(ApiError::conflict(format!(
+            "Wallet '{}' already exists",
+            payload.name
+        )));
     }
 
     // Check if address already exists
-    let existing_addr = WalletRepository::get_by_address(state.db(), &address)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    if existing_addr.is_some() {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("A wallet with address {} already exists", address),
-        ));
+    if WalletRepository::get_by_address(state.db(), &address)
+        .await?
+        .is_some()
+    {
+        return Err(ApiError::conflict(format!(
+            "A wallet with address {} already exists",
+            address
+        )));
     }
 
     // Encrypt private key
-    let encrypted_key = encrypt_private_key(&private_key)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let encrypted_key = encrypt_private_key(&private_key)?;
 
     // Store wallet with encrypted key in database
     let new_wallet = NewWallet {
@@ -105,33 +91,20 @@ async fn create(
         encrypted_key,
     };
 
-    let wallet = WalletRepository::create(state.db(), &new_wallet)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
+    let wallet = WalletRepository::create(state.db(), &new_wallet).await?;
     Ok(Json(wallet))
 }
 
 async fn remove(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<StatusCode, ApiError> {
     // Check if wallet exists
-    let wallet = WalletRepository::get_by_name(state.db(), &name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    if wallet.is_none() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("Wallet '{}' not found", name),
-        ));
-    }
+    WalletRepository::get_by_name(state.db(), &name)
+        .await?
+        .ok_or_else(|| ApiError::from(Error::WalletNotFound(name.clone())))?;
 
     // Delete from database
-    WalletRepository::delete(state.db(), &name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
+    WalletRepository::delete(state.db(), &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }

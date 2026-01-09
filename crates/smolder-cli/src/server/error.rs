@@ -1,8 +1,4 @@
 //! API error types for HTTP responses
-//!
-//! This module provides structured error types for API responses.
-//! These types are prepared for future migration of handlers from
-//! (StatusCode, String) error tuples to proper ApiError responses.
 
 #![allow(dead_code)]
 
@@ -45,6 +41,11 @@ impl ApiError {
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new("INTERNAL_ERROR", message)
     }
+
+    /// Create a conflict error (duplicate resource)
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new("CONFLICT", message)
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -65,6 +66,8 @@ impl IntoResponse for ApiError {
             }
 
             "RPC_ERROR" | "TRANSACTION_FAILED" | "TRANSACTION_REVERTED" => StatusCode::BAD_GATEWAY,
+
+            "CONFLICT" => StatusCode::CONFLICT,
 
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -105,6 +108,3 @@ impl From<serde_json::Error> for ApiError {
         }
     }
 }
-
-/// Result type alias for API handlers
-pub type ApiResult<T> = Result<T, ApiError>;

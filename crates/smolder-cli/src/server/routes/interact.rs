@@ -8,18 +8,18 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use smolder_core::{abi, decrypt_private_key};
+use smolder_core::{abi, decrypt_private_key, Error};
 use smolder_db::{
     CallHistoryFilter, CallHistoryRepository, CallHistoryUpdate, CallHistoryView, CallType,
     DeploymentId, DeploymentRepository, DeploymentView, Network, NetworkRepository, NewCallHistory,
     TransactionStatus, WalletId, WalletRepository, WalletWithKey,
 };
 
+use crate::server::error::ApiError;
 use crate::server::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -43,13 +43,13 @@ struct FunctionsResponse {
 async fn get_functions(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> Result<Json<FunctionsResponse>, (StatusCode, String)> {
+) -> Result<Json<FunctionsResponse>, ApiError> {
     // Get deployment with ABI
     let deployment = get_deployment_by_id(&state, id).await?;
 
     // Parse and categorize functions
     let parsed = abi::categorize_functions(&deployment.abi)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     Ok(Json(FunctionsResponse {
         read: parsed.read,
@@ -76,45 +76,40 @@ async fn execute_call(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(payload): Json<CallRequest>,
-) -> Result<Json<CallResponse>, (StatusCode, String)> {
+) -> Result<Json<CallResponse>, ApiError> {
     let deployment = get_deployment_by_id(&state, id).await?;
     let network = get_network_by_name(&state, &deployment.network_name).await?;
 
     // Get function from ABI
-    let function = abi::get_function(&deployment.abi, &payload.function_name)
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let function = abi::get_function(&deployment.abi, &payload.function_name).map_err(|_| {
+        ApiError::not_found(format!("Function '{}' not found", payload.function_name))
+    })?;
 
     // Verify it's a read function
     if !matches!(
         function.state_mutability,
         StateMutability::View | StateMutability::Pure
     ) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "Function '{}' is not a read function. Use /send for write operations.",
-                payload.function_name
-            ),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "Function '{}' is not a read function. Use /send for write operations.",
+            payload.function_name
+        )));
     }
 
-    let call_data = encode_function_call(&function, &payload.params)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let call_data =
+        encode_function_call(&function, &payload.params).map_err(ApiError::bad_request)?;
 
     // Execute eth_call
-    let contract_address: Address = deployment.address.parse().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid address: {}", e),
-        )
-    })?;
+    let contract_address: Address = deployment
+        .address
+        .parse()
+        .map_err(|e| ApiError::internal(format!("Invalid address: {}", e)))?;
 
     let result = execute_eth_call(&network.rpc_url, contract_address, call_data)
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+        .map_err(|e| ApiError::new("RPC_ERROR", e))?;
 
-    let decoded = decode_function_result(&function, &result)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let decoded = decode_function_result(&function, &result).map_err(ApiError::internal)?;
 
     Ok(Json(CallResponse { result: decoded }))
 }
@@ -142,36 +137,34 @@ async fn execute_send(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(payload): Json<SendRequest>,
-) -> Result<Json<SendResponse>, (StatusCode, String)> {
+) -> Result<Json<SendResponse>, ApiError> {
     let deployment = get_deployment_by_id(&state, id).await?;
     let network = get_network_by_name(&state, &deployment.network_name).await?;
     let wallet = get_wallet_by_name(&state, &payload.wallet_name).await?;
 
-    let function = abi::get_function(&deployment.abi, &payload.function_name)
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let function = abi::get_function(&deployment.abi, &payload.function_name).map_err(|_| {
+        ApiError::not_found(format!("Function '{}' not found", payload.function_name))
+    })?;
 
     // Verify it's a write function
     if matches!(
         function.state_mutability,
         StateMutability::View | StateMutability::Pure
     ) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "Function '{}' is a read function. Use /call for read operations.",
-                payload.function_name
-            ),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "Function '{}' is a read function. Use /call for read operations.",
+            payload.function_name
+        )));
     }
 
-    let call_data = encode_function_call(&function, &payload.params)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let call_data =
+        encode_function_call(&function, &payload.params).map_err(ApiError::bad_request)?;
 
     // Parse value if provided
     let value = match &payload.value {
         Some(v) => Some(
             v.parse::<U256>()
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid value: {}", e)))?,
+                .map_err(|e| ApiError::bad_request(format!("Invalid value: {}", e)))?,
         ),
         None => None,
     };
@@ -188,15 +181,13 @@ async fn execute_send(
     .await?;
 
     let private_key = decrypt_private_key(&wallet.encrypted_key)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     // Execute transaction
-    let contract_address: Address = deployment.address.parse().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid address: {}", e),
-        )
-    })?;
+    let contract_address: Address = deployment
+        .address
+        .parse()
+        .map_err(|e| ApiError::internal(format!("Invalid address: {}", e)))?;
 
     let tx_hash = execute_transaction(
         &network.rpc_url,
@@ -213,7 +204,7 @@ async fn execute_send(
         tokio::spawn(async move {
             let _ = update_call_history_error(&state_clone, history_id, &error).await;
         });
-        (StatusCode::BAD_GATEWAY, e)
+        ApiError::new("RPC_ERROR", e)
     })?;
 
     // Update history with pending tx
@@ -232,15 +223,13 @@ async fn execute_send(
 async fn get_history(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> Result<Json<Vec<CallHistoryView>>, (StatusCode, String)> {
+) -> Result<Json<Vec<CallHistoryView>>, ApiError> {
     let filter = CallHistoryFilter {
         deployment_id: Some(DeploymentId(id)),
         limit: Some(100),
     };
 
-    let history = CallHistoryRepository::list_views(state.db(), filter)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let history = CallHistoryRepository::list_views(state.db(), filter).await?;
 
     Ok(Json(history))
 }
@@ -249,46 +238,22 @@ async fn get_history(
 // Helper functions
 // ================================
 
-async fn get_deployment_by_id(
-    state: &AppState,
-    id: i64,
-) -> Result<DeploymentView, (StatusCode, String)> {
-    let deployment = DeploymentRepository::get_view_by_id(state.db(), DeploymentId(id))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+async fn get_deployment_by_id(state: &AppState, id: i64) -> Result<DeploymentView, ApiError> {
+    let deployment = DeploymentRepository::get_view_by_id(state.db(), DeploymentId(id)).await?;
 
-    deployment.ok_or((
-        StatusCode::NOT_FOUND,
-        format!("Deployment {} not found", id),
-    ))
+    deployment.ok_or_else(|| ApiError::from(Error::DeploymentNotFound(format!("id {}", id))))
 }
 
-async fn get_network_by_name(
-    state: &AppState,
-    name: &str,
-) -> Result<Network, (StatusCode, String)> {
-    let network = NetworkRepository::get_by_name(state.db(), name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+async fn get_network_by_name(state: &AppState, name: &str) -> Result<Network, ApiError> {
+    let network = NetworkRepository::get_by_name(state.db(), name).await?;
 
-    network.ok_or((
-        StatusCode::NOT_FOUND,
-        format!("Network '{}' not found", name),
-    ))
+    network.ok_or_else(|| ApiError::from(Error::NetworkNotFound(name.to_string())))
 }
 
-async fn get_wallet_by_name(
-    state: &AppState,
-    name: &str,
-) -> Result<WalletWithKey, (StatusCode, String)> {
-    let wallet = WalletRepository::get_with_key(state.db(), name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+async fn get_wallet_by_name(state: &AppState, name: &str) -> Result<WalletWithKey, ApiError> {
+    let wallet = WalletRepository::get_with_key(state.db(), name).await?;
 
-    wallet.ok_or((
-        StatusCode::NOT_FOUND,
-        format!("Wallet '{}' not found", name),
-    ))
+    wallet.ok_or_else(|| ApiError::from(Error::WalletNotFound(name.to_string())))
 }
 
 fn encode_function_call(
@@ -507,9 +472,8 @@ async fn record_call_history(
     function_signature: &str,
     params: &[serde_json::Value],
     call_type: CallType,
-) -> Result<i64, (StatusCode, String)> {
-    let params_json = serde_json::to_string(params)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+) -> Result<i64, ApiError> {
+    let params_json = serde_json::to_string(params)?;
 
     let entry = NewCallHistory {
         deployment_id,
@@ -520,9 +484,7 @@ async fn record_call_history(
         call_type,
     };
 
-    let history = CallHistoryRepository::create(state.db(), &entry)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let history = CallHistoryRepository::create(state.db(), &entry).await?;
 
     Ok(history.id)
 }
@@ -532,7 +494,7 @@ async fn update_call_history_tx(
     id: i64,
     tx_hash: &str,
     status: TransactionStatus,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<(), ApiError> {
     let update = CallHistoryUpdate {
         result: None,
         tx_hash: Some(tx_hash.to_string()),
@@ -543,18 +505,12 @@ async fn update_call_history_tx(
         error_message: None,
     };
 
-    CallHistoryRepository::update(state.db(), id, &update)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    CallHistoryRepository::update(state.db(), id, &update).await?;
 
     Ok(())
 }
 
-async fn update_call_history_error(
-    state: &AppState,
-    id: i64,
-    error: &str,
-) -> Result<(), (StatusCode, String)> {
+async fn update_call_history_error(state: &AppState, id: i64, error: &str) -> Result<(), ApiError> {
     let update = CallHistoryUpdate {
         result: None,
         tx_hash: None,
@@ -565,9 +521,7 @@ async fn update_call_history_error(
         error_message: Some(error.to_string()),
     };
 
-    CallHistoryRepository::update(state.db(), id, &update)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    CallHistoryRepository::update(state.db(), id, &update).await?;
 
     Ok(())
 }

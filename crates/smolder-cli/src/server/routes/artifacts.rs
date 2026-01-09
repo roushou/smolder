@@ -1,13 +1,14 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
     routing::get,
     Json, Router,
 };
 use serde::Serialize;
+use smolder_core::Error;
 use smolder_db::ContractRepository;
 
 use crate::forge::{ArtifactDetails, ArtifactInfo};
+use crate::server::error::ApiError;
 use crate::server::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -23,19 +24,15 @@ struct ArtifactListItem {
     in_registry: bool,
 }
 
-async fn list(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<ArtifactListItem>>, (StatusCode, String)> {
+async fn list(State(state): State<AppState>) -> Result<Json<Vec<ArtifactListItem>>, ApiError> {
     // Get all artifacts from out/ directory
     let artifacts = state
         .artifacts()
         .list()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     // Get contracts in registry to mark which artifacts are tracked
-    let contracts = ContractRepository::list(state.db())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let contracts = ContractRepository::list(state.db()).await?;
 
     let registry_names: Vec<String> = contracts.into_iter().map(|c| c.name).collect();
 
@@ -60,23 +57,17 @@ struct ArtifactDetailsResponse {
 async fn get_by_name(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<Json<ArtifactDetailsResponse>, (StatusCode, String)> {
+) -> Result<Json<ArtifactDetailsResponse>, ApiError> {
     let details = state.artifacts().get_details(&name).map_err(|e| {
         if e.to_string().contains("Could not find artifact") {
-            (
-                StatusCode::NOT_FOUND,
-                format!("Artifact '{}' not found", name),
-            )
+            ApiError::from(Error::ArtifactNotFound(name.clone()))
         } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            ApiError::internal(e.to_string())
         }
     })?;
 
     // Check if in registry
-    let contract = ContractRepository::get_by_name(state.db(), &name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
+    let contract = ContractRepository::get_by_name(state.db(), &name).await?;
     let in_registry = contract.is_some();
 
     Ok(Json(ArtifactDetailsResponse {

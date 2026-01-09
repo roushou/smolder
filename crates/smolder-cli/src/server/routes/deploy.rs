@@ -5,14 +5,15 @@ use alloy::primitives::{keccak256, Address, Bytes, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
-use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
-use smolder_core::{decrypt_private_key, ParamInfo};
+use smolder_core::{decrypt_private_key, Error, ParamInfo};
 use smolder_db::{
     ContractRepository, DeploymentId, DeploymentRepository, NetworkRepository, NewContract,
     NewDeployment, WalletRepository,
 };
 
+use crate::server::error::ApiError;
 use crate::server::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -40,79 +41,57 @@ struct DeployResponse {
 async fn deploy_contract(
     State(state): State<AppState>,
     Json(payload): Json<DeployRequest>,
-) -> Result<Json<DeployResponse>, (StatusCode, String)> {
+) -> Result<Json<DeployResponse>, ApiError> {
     // Get artifact details
     let artifact = state
         .artifacts()
         .get_details(&payload.artifact_name)
         .map_err(|e| {
             if e.to_string().contains("Could not find artifact") {
-                (
-                    StatusCode::NOT_FOUND,
-                    format!("Artifact '{}' not found", payload.artifact_name),
-                )
+                ApiError::from(Error::ArtifactNotFound(payload.artifact_name.clone()))
             } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                ApiError::internal(e.to_string())
             }
         })?;
 
     if !artifact.has_bytecode {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "Artifact '{}' has no bytecode (may be an interface or abstract contract)",
-                payload.artifact_name
-            ),
-        ));
+        return Err(ApiError::bad_request(format!(
+            "Artifact '{}' has no bytecode (may be an interface or abstract contract)",
+            payload.artifact_name
+        )));
     }
 
     // Get bytecode
     let bytecode = state
         .artifacts()
         .get_bytecode(&payload.artifact_name)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     // Get network using repository
     let network = NetworkRepository::get_by_name(state.db(), &payload.network_name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                format!("Network '{}' not found", payload.network_name),
-            )
-        })?;
+        .await?
+        .ok_or_else(|| ApiError::from(Error::NetworkNotFound(payload.network_name.clone())))?;
 
     // Get wallet with encrypted key using repository
     let wallet = WalletRepository::get_with_key(state.db(), &payload.wallet_name)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                format!("Wallet '{}' not found", payload.wallet_name),
-            )
-        })?;
+        .await?
+        .ok_or_else(|| ApiError::from(Error::WalletNotFound(payload.wallet_name.clone())))?;
 
     // Encode constructor args if any
     let encoded_args = if let Some(constructor) = &artifact.constructor {
         if payload.constructor_args.len() != constructor.inputs.len() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "Expected {} constructor arguments, got {}",
-                    constructor.inputs.len(),
-                    payload.constructor_args.len()
-                ),
-            ));
+            return Err(ApiError::bad_request(format!(
+                "Expected {} constructor arguments, got {}",
+                constructor.inputs.len(),
+                payload.constructor_args.len()
+            )));
         }
 
         encode_constructor_args(&constructor.inputs, &payload.constructor_args)
-            .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+            .map_err(ApiError::bad_request)?
     } else if !payload.constructor_args.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Contract has no constructor but arguments were provided".to_string(),
+        return Err(ApiError::bad_request(
+            "Contract has no constructor but arguments were provided",
         ));
     } else {
         Vec::new()
@@ -124,20 +103,18 @@ async fn deploy_contract(
             // Check if constructor is payable
             if let Some(constructor) = &artifact.constructor {
                 if !constructor.is_payable() {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        "Cannot send value to non-payable constructor".to_string(),
+                    return Err(ApiError::bad_request(
+                        "Cannot send value to non-payable constructor",
                     ));
                 }
             } else {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "Cannot send value to contract without payable constructor".to_string(),
+                return Err(ApiError::bad_request(
+                    "Cannot send value to contract without payable constructor",
                 ));
             }
             Some(
                 v.parse::<U256>()
-                    .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid value: {}", e)))?,
+                    .map_err(|e| ApiError::bad_request(format!("Invalid value: {}", e)))?,
             )
         }
         _ => None,
@@ -145,11 +122,10 @@ async fn deploy_contract(
 
     // Decrypt private key from wallet
     let private_key = decrypt_private_key(&wallet.encrypted_key)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     // Combine bytecode and encoded args
-    let bytecode_bytes =
-        hex::decode(&bytecode).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let bytecode_bytes = hex::decode(&bytecode).map_err(|e| ApiError::internal(e.to_string()))?;
     let mut deploy_data = bytecode_bytes.clone();
     deploy_data.extend_from_slice(&encoded_args);
 
@@ -161,7 +137,7 @@ async fn deploy_contract(
         value,
     )
     .await
-    .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+    .map_err(|e| ApiError::new("RPC_ERROR", e))?;
 
     // Record deployment in database
     let deployment_id = if let Some(ref address) = contract_address {
@@ -169,8 +145,7 @@ async fn deploy_contract(
         let bytecode_hash = format!("{:x}", keccak256(&bytecode_bytes));
 
         // Get or create contract in registry
-        let abi_json = serde_json::to_string(&artifact.abi)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let abi_json = serde_json::to_string(&artifact.abi)?;
 
         let new_contract = NewContract {
             name: payload.artifact_name.clone(),
@@ -179,9 +154,7 @@ async fn deploy_contract(
             bytecode_hash,
         };
 
-        let contract = ContractRepository::upsert(state.db(), &new_contract)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let contract = ContractRepository::upsert(state.db(), &new_contract).await?;
 
         // Record deployment
         let new_deployment = NewDeployment {
@@ -194,9 +167,7 @@ async fn deploy_contract(
             constructor_args: None,
         };
 
-        let deployment = DeploymentRepository::create(state.db(), &new_deployment)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let deployment = DeploymentRepository::create(state.db(), &new_deployment).await?;
 
         Some(deployment.id)
     } else {
