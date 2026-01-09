@@ -31,66 +31,49 @@ pub fn create_router(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use axum::{body::Body, http::Request, Router};
-    use smolder_core::{schema, Contract, DeploymentView, Network};
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-    use std::str::FromStr;
-    use std::sync::Arc;
+    use smolder_core::{Contract, DeploymentView, Network, NewContract, NewDeployment, NewNetwork};
     use tower::ServiceExt;
 
-    async fn setup_test_app() -> Router {
-        let options = SqliteConnectOptions::from_str(":memory:")
-            .unwrap()
-            .create_if_missing(true)
-            .foreign_keys(true);
+    use crate::db::Database;
 
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
+    async fn setup_test_app() -> Router {
+        let db = Database::connect_to(":memory:").await.unwrap();
+        db.init_schema().await.unwrap();
+
+        // Insert test data using database methods
+        let network_id = db
+            .upsert_network(&NewNetwork {
+                name: "testnet".to_string(),
+                chain_id: 12345,
+                rpc_url: "https://rpc.test.xyz".to_string(),
+                explorer_url: Some("https://explorer.test.xyz".to_string()),
+            })
             .await
             .unwrap();
 
-        schema::init_schema(&pool).await.unwrap();
+        let contract_id = db
+            .upsert_contract(&NewContract {
+                name: "TestToken".to_string(),
+                source_path: "src/TestToken.sol".to_string(),
+                abi: r#"[{"type":"function","name":"transfer"}]"#.to_string(),
+                bytecode_hash: "0xabc123".to_string(),
+            })
+            .await
+            .unwrap();
 
-        sqlx::query(
-            "INSERT INTO networks (name, chain_id, rpc_url, explorer_url) VALUES (?, ?, ?, ?)",
-        )
-        .bind("testnet")
-        .bind(12345_i64)
-        .bind("https://rpc.test.xyz")
-        .bind("https://explorer.test.xyz")
-        .execute(&pool)
+        db.create_deployment(&NewDeployment {
+            contract_id,
+            network_id,
+            address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+            deployer: "0xdeployer".to_string(),
+            tx_hash: "0xtxhash".to_string(),
+            block_number: Some(100),
+            constructor_args: None,
+        })
         .await
         .unwrap();
 
-        sqlx::query(
-            "INSERT INTO contracts (name, source_path, abi, bytecode_hash) VALUES (?, ?, ?, ?)",
-        )
-        .bind("TestToken")
-        .bind("src/TestToken.sol")
-        .bind(r#"[{"type":"function","name":"transfer"}]"#)
-        .bind("0xabc123")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            "INSERT INTO deployments (contract_id, network_id, address, deployer, tx_hash, block_number, version, is_current) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-        .bind(1_i64)
-        .bind(1_i64)
-        .bind("0x1234567890abcdef1234567890abcdef12345678")
-        .bind("0xdeployer")
-        .bind("0xtxhash")
-        .bind(100_i64)
-        .bind(1_i64)
-        .bind(true)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let state = crate::server::AppState {
-            pool: Arc::new(pool),
-        };
+        let state = crate::server::AppState::new(db);
 
         super::create_router(state)
     }

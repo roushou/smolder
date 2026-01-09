@@ -5,8 +5,9 @@ use axum::{
     Json, Router,
 };
 use serde::Serialize;
+use smolder_core::repository::ContractRepository;
 
-use crate::forge::{self, ArtifactDetails, ArtifactInfo};
+use crate::forge::{ArtifactDetails, ArtifactInfo};
 use crate::server::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -26,19 +27,22 @@ async fn list(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ArtifactListItem>>, (StatusCode, String)> {
     // Get all artifacts from out/ directory
-    let artifacts =
-        forge::list_artifacts().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let artifacts = state
+        .artifacts()
+        .list()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Get contracts in registry to mark which artifacts are tracked
-    let registry_contracts: Vec<String> = sqlx::query_scalar("SELECT name FROM contracts")
-        .fetch_all(state.pool.as_ref())
+    let contracts = ContractRepository::list(state.db())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let registry_names: Vec<String> = contracts.into_iter().map(|c| c.name).collect();
 
     let items: Vec<ArtifactListItem> = artifacts
         .into_iter()
         .map(|info| {
-            let in_registry = registry_contracts.contains(&info.name);
+            let in_registry = registry_names.contains(&info.name);
             ArtifactListItem { info, in_registry }
         })
         .collect();
@@ -57,7 +61,7 @@ async fn get_by_name(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<ArtifactDetailsResponse>, (StatusCode, String)> {
-    let details = forge::get_artifact_details(&name).map_err(|e| {
+    let details = state.artifacts().get_details(&name).map_err(|e| {
         if e.to_string().contains("Could not find artifact") {
             (
                 StatusCode::NOT_FOUND,
@@ -69,11 +73,11 @@ async fn get_by_name(
     })?;
 
     // Check if in registry
-    let in_registry: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM contracts WHERE name = ?")
-        .bind(&name)
-        .fetch_one(state.pool.as_ref())
+    let contract = ContractRepository::get_by_name(state.db(), &name)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let in_registry = contract.is_some();
 
     Ok(Json(ArtifactDetailsResponse {
         details,

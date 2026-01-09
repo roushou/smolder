@@ -4,6 +4,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use smolder_core::repository::NetworkRepository;
 use smolder_core::Network;
 
 use crate::server::AppState;
@@ -15,8 +16,7 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn list(State(state): State<AppState>) -> Result<Json<Vec<Network>>, (StatusCode, String)> {
-    let networks = sqlx::query_as::<_, Network>("SELECT * FROM networks ORDER BY name")
-        .fetch_all(state.pool.as_ref())
+    let networks = NetworkRepository::list(state.db())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -27,9 +27,7 @@ async fn get_by_name(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Network>, (StatusCode, String)> {
-    let network = sqlx::query_as::<_, Network>("SELECT * FROM networks WHERE name = ?")
-        .bind(&name)
-        .fetch_optional(state.pool.as_ref())
+    let network = NetworkRepository::get_by_name(state.db(), &name)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 

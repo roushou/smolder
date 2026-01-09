@@ -1,38 +1,60 @@
+//! Export deployments to various formats
+
 use std::collections::HashMap;
 
+use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 use console::style;
 use serde::Serialize;
 
 use crate::db::Database;
 
-pub async fn run(format: &str, output: Option<&str>) -> Result<()> {
-    let db = Database::connect().await?;
-    let deployments = db.get_all_deployments_for_export().await?;
+/// Export deployments to various formats
+#[derive(Args)]
+pub struct ExportCommand {
+    /// Output format: json, ts, env
+    #[arg(long, default_value = "json")]
+    pub format: String,
 
-    if deployments.is_empty() {
-        println!("No deployments to export.");
-        return Ok(());
-    }
+    /// Output file path
+    #[arg(long, short)]
+    pub output: Option<String>,
+}
 
-    let content = match format {
-        "json" => export_json(&deployments)?,
-        "ts" => export_typescript(&deployments)?,
-        "env" => export_env(&deployments)?,
-        _ => return Err(eyre!("Unknown format '{}'. Use: json, ts, env", format)),
-    };
+impl ExportCommand {
+    pub async fn run(self) -> Result<()> {
+        let db = Database::connect().await?;
+        let deployments = db.get_all_deployments_for_export().await?;
 
-    match output {
-        Some(path) => {
-            std::fs::write(path, &content)?;
-            println!("{} Exported to {}", style("✓").green(), path);
+        if deployments.is_empty() {
+            println!("No deployments to export.");
+            return Ok(());
         }
-        None => {
-            print!("{}", content);
-        }
-    }
 
-    Ok(())
+        let content = match self.format.as_str() {
+            "json" => export_json(&deployments)?,
+            "ts" => export_typescript(&deployments)?,
+            "env" => export_env(&deployments)?,
+            _ => {
+                return Err(eyre!(
+                    "Unknown format '{}'. Use: json, ts, env",
+                    self.format
+                ))
+            }
+        };
+
+        match self.output {
+            Some(path) => {
+                std::fs::write(&path, &content)?;
+                println!("{} Exported to {}", style("✓").green(), path);
+            }
+            None => {
+                print!("{}", content);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]

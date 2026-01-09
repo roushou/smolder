@@ -1,26 +1,17 @@
+mod error;
 mod routes;
+mod state;
 mod static_files;
 
-use sqlx::sqlite::SqlitePool;
+#[allow(unused_imports)]
+pub use error::{ApiError, ApiResult};
+pub use state::AppState;
+
+use crate::db::Database;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
 pub use routes::create_router;
-
-/// Application state shared across handlers
-#[derive(Clone)]
-pub struct AppState {
-    pub pool: Arc<SqlitePool>,
-}
-
-impl AppState {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self {
-            pool: Arc::new(pool),
-        }
-    }
-}
 
 /// Server configuration
 pub struct ServerConfig {
@@ -39,10 +30,10 @@ impl Default for ServerConfig {
 
 /// Start the smolder server
 pub async fn run_server(
-    pool: SqlitePool,
+    db: Database,
     config: ServerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = AppState::new(pool);
+    let state = AppState::new(db);
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

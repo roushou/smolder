@@ -4301,6 +4301,7 @@ name = "smolder-cli"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "async-trait",
  "axum",
  "clap",
  "color-eyre",
@@ -4327,6 +4328,8 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "alloy",
+ "async-trait",
+ "hex",
  "rand 0.8.5",
  "serde",
  "serde_json",

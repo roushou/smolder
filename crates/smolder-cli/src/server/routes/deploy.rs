@@ -7,9 +7,11 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
-use smolder_core::{decrypt_private_key, Network, WalletWithKey};
+use smolder_core::repository::{
+    ContractRepository, DeploymentRepository, NetworkRepository, WalletRepository,
+};
+use smolder_core::{decrypt_private_key, NewContract, NewDeployment, ParamInfo};
 
-use crate::forge;
 use crate::server::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -39,16 +41,19 @@ async fn deploy_contract(
     Json(payload): Json<DeployRequest>,
 ) -> Result<Json<DeployResponse>, (StatusCode, String)> {
     // Get artifact details
-    let artifact = forge::get_artifact_details(&payload.artifact_name).map_err(|e| {
-        if e.to_string().contains("Could not find artifact") {
-            (
-                StatusCode::NOT_FOUND,
-                format!("Artifact '{}' not found", payload.artifact_name),
-            )
-        } else {
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-        }
-    })?;
+    let artifact = state
+        .artifacts()
+        .get_details(&payload.artifact_name)
+        .map_err(|e| {
+            if e.to_string().contains("Could not find artifact") {
+                (
+                    StatusCode::NOT_FOUND,
+                    format!("Artifact '{}' not found", payload.artifact_name),
+                )
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })?;
 
     if !artifact.has_bytecode {
         return Err((
@@ -61,14 +66,32 @@ async fn deploy_contract(
     }
 
     // Get bytecode
-    let bytecode = forge::get_artifact_bytecode(&payload.artifact_name)
+    let bytecode = state
+        .artifacts()
+        .get_bytecode(&payload.artifact_name)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Get network
-    let network = get_network_by_name(&state, &payload.network_name).await?;
+    // Get network using repository
+    let network = NetworkRepository::get_by_name(state.db(), &payload.network_name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("Network '{}' not found", payload.network_name),
+            )
+        })?;
 
-    // Get wallet with encrypted key (validates wallet exists)
-    let wallet = get_wallet_with_key(&state, &payload.wallet_name).await?;
+    // Get wallet with encrypted key using repository
+    let wallet = WalletRepository::get_with_key(state.db(), &payload.wallet_name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("Wallet '{}' not found", payload.wallet_name),
+            )
+        })?;
 
     // Encode constructor args if any
     let encoded_args = if let Some(constructor) = &artifact.constructor {
@@ -99,7 +122,7 @@ async fn deploy_contract(
         Some(v) if !v.is_empty() => {
             // Check if constructor is payable
             if let Some(constructor) = &artifact.constructor {
-                if constructor.state_mutability != "payable" {
+                if !constructor.is_payable() {
                     return Err((
                         StatusCode::BAD_REQUEST,
                         "Cannot send value to non-payable constructor".to_string(),
@@ -145,22 +168,36 @@ async fn deploy_contract(
         let bytecode_hash = format!("{:x}", keccak256(&bytecode_bytes));
 
         // Get or create contract in registry
-        let contract_id =
-            get_or_create_contract(&state, &payload.artifact_name, &artifact, &bytecode_hash)
-                .await?;
+        let abi_json = serde_json::to_string(&artifact.abi)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let new_contract = NewContract {
+            name: payload.artifact_name.clone(),
+            source_path: artifact.source_path.clone(),
+            abi: abi_json,
+            bytecode_hash,
+        };
+
+        let contract = ContractRepository::upsert(state.db(), &new_contract)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
         // Record deployment
-        let deployment_id = record_deployment(
-            &state,
-            contract_id,
-            network.id,
-            address,
-            &wallet.address,
-            &tx_hash,
-        )
-        .await?;
+        let new_deployment = NewDeployment {
+            contract_id: contract.id,
+            network_id: network.id,
+            address: address.clone(),
+            deployer: wallet.address.clone(),
+            tx_hash: tx_hash.clone(),
+            block_number: None,
+            constructor_args: None,
+        };
 
-        Some(deployment_id)
+        let deployment = DeploymentRepository::create(state.db(), &new_deployment)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        Some(deployment.id)
     } else {
         None
     };
@@ -172,40 +209,8 @@ async fn deploy_contract(
     }))
 }
 
-async fn get_network_by_name(
-    state: &AppState,
-    name: &str,
-) -> Result<Network, (StatusCode, String)> {
-    let network = sqlx::query_as::<_, Network>("SELECT * FROM networks WHERE name = ?")
-        .bind(name)
-        .fetch_optional(state.pool.as_ref())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    network.ok_or((
-        StatusCode::NOT_FOUND,
-        format!("Network '{}' not found", name),
-    ))
-}
-
-async fn get_wallet_with_key(
-    state: &AppState,
-    name: &str,
-) -> Result<WalletWithKey, (StatusCode, String)> {
-    let wallet = sqlx::query_as::<_, WalletWithKey>("SELECT * FROM wallets WHERE name = ?")
-        .bind(name)
-        .fetch_optional(state.pool.as_ref())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    wallet.ok_or((
-        StatusCode::NOT_FOUND,
-        format!("Wallet '{}' not found", name),
-    ))
-}
-
 fn encode_constructor_args(
-    inputs: &[forge::ConstructorInput],
+    inputs: &[ParamInfo],
     args: &[serde_json::Value],
 ) -> Result<Vec<u8>, String> {
     let mut sol_values = Vec::new();
@@ -357,88 +362,4 @@ async fn execute_deploy(
     let contract_address = receipt.contract_address.map(|a| format!("{:?}", a));
 
     Ok((tx_hash, contract_address))
-}
-
-async fn get_or_create_contract(
-    state: &AppState,
-    name: &str,
-    artifact: &forge::ArtifactDetails,
-    bytecode_hash: &str,
-) -> Result<i64, (StatusCode, String)> {
-    // Check if contract already exists
-    let existing: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM contracts WHERE name = ? AND bytecode_hash = ?")
-            .bind(name)
-            .bind(bytecode_hash)
-            .fetch_optional(state.pool.as_ref())
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    if let Some(id) = existing {
-        return Ok(id);
-    }
-
-    // Create new contract
-    let abi_json = serde_json::to_string(&artifact.abi)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO contracts (name, source_path, abi, bytecode_hash) VALUES (?, ?, ?, ?) RETURNING id",
-    )
-    .bind(name)
-    .bind(&artifact.source_path)
-    .bind(&abi_json)
-    .bind(bytecode_hash)
-    .fetch_one(state.pool.as_ref())
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(id)
-}
-
-async fn record_deployment(
-    state: &AppState,
-    contract_id: i64,
-    network_id: i64,
-    address: &str,
-    deployer: &str,
-    tx_hash: &str,
-) -> Result<i64, (StatusCode, String)> {
-    // Get next version for this contract/network
-    let next_version: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(version), 0) + 1 FROM deployments WHERE contract_id = ? AND network_id = ?",
-    )
-    .bind(contract_id)
-    .bind(network_id)
-    .fetch_one(state.pool.as_ref())
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Mark previous deployments as not current
-    sqlx::query("UPDATE deployments SET is_current = 0 WHERE contract_id = ? AND network_id = ?")
-        .bind(contract_id)
-        .bind(network_id)
-        .execute(state.pool.as_ref())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Insert new deployment
-    let id = sqlx::query_scalar::<_, i64>(
-        r#"
-        INSERT INTO deployments (contract_id, network_id, address, deployer, tx_hash, version, is_current)
-        VALUES (?, ?, ?, ?, ?, ?, 1)
-        RETURNING id
-        "#,
-    )
-    .bind(contract_id)
-    .bind(network_id)
-    .bind(address)
-    .bind(deployer)
-    .bind(tx_hash)
-    .bind(next_version)
-    .fetch_one(state.pool.as_ref())
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    Ok(id)
 }

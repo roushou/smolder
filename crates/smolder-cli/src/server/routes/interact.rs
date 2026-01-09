@@ -1,4 +1,5 @@
 use alloy::dyn_abi::{DynSolType, DynSolValue, FunctionExt, JsonAbiExt};
+use alloy::hex;
 use alloy::json_abi::{Function, StateMutability};
 use alloy::network::EthereumWallet;
 use alloy::primitives::{Address, Bytes, U256};
@@ -12,8 +13,13 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use smolder_core::repository::{
+    CallHistoryFilter, CallHistoryRepository, DeploymentRepository, NetworkRepository,
+    WalletRepository,
+};
 use smolder_core::{
-    abi, decrypt_private_key, CallHistoryView, DeploymentView, Network, WalletWithKey,
+    abi, decrypt_private_key, CallHistoryUpdate, CallHistoryView, DeploymentId, DeploymentView,
+    Network, NewCallHistory, WalletWithKey,
 };
 
 use crate::server::AppState;
@@ -204,7 +210,11 @@ async fn execute_send(
     .await
     .map_err(|e| {
         // Update history with error
-        let _ = update_call_history_error(&state, history_id, &e);
+        let state_clone = state.clone();
+        let error = e.clone();
+        tokio::spawn(async move {
+            let _ = update_call_history_error(&state_clone, history_id, &error).await;
+        });
         (StatusCode::BAD_GATEWAY, e)
     })?;
 
@@ -225,42 +235,14 @@ async fn get_history(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<CallHistoryView>>, (StatusCode, String)> {
-    let history = sqlx::query_as::<_, CallHistoryView>(
-        r#"
-        SELECT
-            h.id,
-            h.deployment_id,
-            c.name as contract_name,
-            n.name as network_name,
-            d.address as contract_address,
-            w.name as wallet_name,
-            h.function_name,
-            h.function_signature,
-            h.input_params,
-            h.call_type,
-            h.result,
-            h.tx_hash,
-            h.block_number,
-            h.gas_used,
-            h.gas_price,
-            h.status,
-            h.error_message,
-            h.created_at,
-            h.confirmed_at
-        FROM call_history h
-        JOIN deployments d ON h.deployment_id = d.id
-        JOIN contracts c ON d.contract_id = c.id
-        JOIN networks n ON d.network_id = n.id
-        LEFT JOIN wallets w ON h.wallet_id = w.id
-        WHERE h.deployment_id = ?
-        ORDER BY h.created_at DESC
-        LIMIT 100
-        "#,
-    )
-    .bind(id)
-    .fetch_all(state.pool.as_ref())
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let filter = CallHistoryFilter {
+        deployment_id: Some(DeploymentId(id)),
+        limit: Some(100),
+    };
+
+    let history = CallHistoryRepository::list_views(state.db(), filter)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(history))
 }
@@ -273,31 +255,9 @@ async fn get_deployment_by_id(
     state: &AppState,
     id: i64,
 ) -> Result<DeploymentView, (StatusCode, String)> {
-    let deployment = sqlx::query_as::<_, DeploymentView>(
-        r#"
-        SELECT
-            d.id,
-            c.name as contract_name,
-            n.name as network_name,
-            n.chain_id,
-            d.address,
-            d.deployer,
-            d.tx_hash,
-            d.block_number,
-            d.version,
-            d.deployed_at,
-            d.is_current,
-            c.abi
-        FROM deployments d
-        JOIN contracts c ON d.contract_id = c.id
-        JOIN networks n ON d.network_id = n.id
-        WHERE d.id = ?
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(state.pool.as_ref())
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let deployment = DeploymentRepository::get_view_by_id(state.db(), DeploymentId(id))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     deployment.ok_or((
         StatusCode::NOT_FOUND,
@@ -309,9 +269,7 @@ async fn get_network_by_name(
     state: &AppState,
     name: &str,
 ) -> Result<Network, (StatusCode, String)> {
-    let network = sqlx::query_as::<_, Network>("SELECT * FROM networks WHERE name = ?")
-        .bind(name)
-        .fetch_optional(state.pool.as_ref())
+    let network = NetworkRepository::get_by_name(state.db(), name)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -325,9 +283,7 @@ async fn get_wallet_by_name(
     state: &AppState,
     name: &str,
 ) -> Result<WalletWithKey, (StatusCode, String)> {
-    let wallet = sqlx::query_as::<_, WalletWithKey>("SELECT * FROM wallets WHERE name = ?")
-        .bind(name)
-        .fetch_optional(state.pool.as_ref())
+    let wallet = WalletRepository::get_with_key(state.db(), name)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -557,24 +513,20 @@ async fn record_call_history(
     let params_json = serde_json::to_string(params)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let id = sqlx::query_scalar::<_, i64>(
-        r#"
-        INSERT INTO call_history (deployment_id, wallet_id, function_name, function_signature, input_params, call_type)
-        VALUES (?, ?, ?, ?, ?, ?)
-        RETURNING id
-        "#,
-    )
-    .bind(deployment_id)
-    .bind(wallet_id)
-    .bind(function_name)
-    .bind(function_signature)
-    .bind(&params_json)
-    .bind(call_type)
-    .fetch_one(state.pool.as_ref())
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let entry = NewCallHistory {
+        deployment_id,
+        wallet_id,
+        function_name: function_name.to_string(),
+        function_signature: function_signature.to_string(),
+        input_params: params_json,
+        call_type: call_type.to_string(),
+    };
 
-    Ok(id)
+    let history = CallHistoryRepository::create(state.db(), &entry)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(history.id)
 }
 
 async fn update_call_history_tx(
@@ -583,30 +535,41 @@ async fn update_call_history_tx(
     tx_hash: &str,
     status: &str,
 ) -> Result<(), (StatusCode, String)> {
-    sqlx::query("UPDATE call_history SET tx_hash = ?, status = ? WHERE id = ?")
-        .bind(tx_hash)
-        .bind(status)
-        .bind(id)
-        .execute(state.pool.as_ref())
+    let update = CallHistoryUpdate {
+        result: None,
+        tx_hash: Some(tx_hash.to_string()),
+        block_number: None,
+        gas_used: None,
+        gas_price: None,
+        status: status.to_string(),
+        error_message: None,
+    };
+
+    CallHistoryRepository::update(state.db(), id, &update)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(())
 }
 
-fn update_call_history_error(state: &AppState, id: i64, error: &str) -> Result<(), String> {
-    // This is called in error handlers, so we use blocking
-    // In production, you'd want proper async handling
-    let pool = state.pool.clone();
-    let error = error.to_string();
-    tokio::spawn(async move {
-        let _ = sqlx::query(
-            "UPDATE call_history SET status = 'failed', error_message = ? WHERE id = ?",
-        )
-        .bind(&error)
-        .bind(id)
-        .execute(pool.as_ref())
-        .await;
-    });
+async fn update_call_history_error(
+    state: &AppState,
+    id: i64,
+    error: &str,
+) -> Result<(), (StatusCode, String)> {
+    let update = CallHistoryUpdate {
+        result: None,
+        tx_hash: None,
+        block_number: None,
+        gas_used: None,
+        gas_price: None,
+        status: "failed".to_string(),
+        error_message: Some(error.to_string()),
+    };
+
+    CallHistoryRepository::update(state.db(), id, &update)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     Ok(())
 }
