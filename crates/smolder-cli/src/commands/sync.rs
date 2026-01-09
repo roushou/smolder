@@ -120,9 +120,10 @@ impl SyncCommand {
             let (network_name, rpc_url, explorer_url) = network_info;
 
             println!(
-                "{} Processing {} on {}...",
+                "{} Processing {} (run-{}) on {}...",
                 style("->").blue(),
                 style(&broadcast_file.script_name).cyan(),
+                style(&broadcast_file.run_id).dim(),
                 style(network_name).cyan()
             );
 
@@ -250,9 +251,13 @@ struct BroadcastFile {
     path: String,
     chain_id: u64,
     script_name: String,
+    /// Run identifier for display (e.g., "1", "2", "latest")
+    run_id: String,
+    /// Sort key for ordering (numbered runs come before "latest")
+    sort_key: u64,
 }
 
-/// Scan the broadcast directory for all run-latest.json files
+/// Scan the broadcast directory for all run-*.json files
 fn scan_broadcast_directory() -> Result<Vec<BroadcastFile>> {
     let broadcast_dir = Path::new("broadcast");
     if !broadcast_dir.exists() {
@@ -261,7 +266,7 @@ fn scan_broadcast_directory() -> Result<Vec<BroadcastFile>> {
 
     let mut files = Vec::new();
 
-    // broadcast/<ScriptName>/<chainId>/run-latest.json
+    // broadcast/<ScriptName>/<chainId>/run-*.json
     for script_entry in std::fs::read_dir(broadcast_dir)? {
         let script_entry = script_entry?;
         let script_path = script_entry.path();
@@ -294,16 +299,47 @@ fn scan_broadcast_directory() -> Result<Vec<BroadcastFile>> {
                 Err(_) => continue,
             };
 
-            let run_latest = chain_path.join("run-latest.json");
-            if run_latest.exists() {
+            // Find all run-*.json files
+            for file_entry in std::fs::read_dir(&chain_path)? {
+                let file_entry = file_entry?;
+                let file_path = file_entry.path();
+
+                if !file_path.is_file() {
+                    continue;
+                }
+
+                let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                // Match run-*.json pattern
+                if !file_name.starts_with("run-") || !file_name.ends_with(".json") {
+                    continue;
+                }
+
+                // Extract run identifier (e.g., "1", "2", "latest")
+                let run_id = file_name
+                    .strip_prefix("run-")
+                    .and_then(|s| s.strip_suffix(".json"))
+                    .unwrap_or("")
+                    .to_string();
+
+                // Compute sort key: numbered runs first (1, 2, 3...), then "latest"
+                let sort_key = run_id.parse::<u64>().unwrap_or(u64::MAX);
+
                 files.push(BroadcastFile {
-                    path: run_latest.to_string_lossy().to_string(),
+                    path: file_path.to_string_lossy().to_string(),
                     chain_id,
                     script_name: script_name.clone(),
+                    run_id,
+                    sort_key,
                 });
             }
         }
     }
+
+    // Sort by script name, chain ID, then run number (chronological order)
+    files.sort_by(|a, b| {
+        (&a.script_name, a.chain_id, a.sort_key).cmp(&(&b.script_name, b.chain_id, b.sort_key))
+    });
 
     Ok(files)
 }
