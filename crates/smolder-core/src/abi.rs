@@ -2,8 +2,14 @@
 //!
 //! Provides the [`Abi`] struct for declarative access to contract ABI information
 //! including functions, constructor, and parameter details.
+//!
+//! Also provides utilities for converting between JSON and Solidity types:
+//! - [`json_to_sol_value`] - Convert JSON values to Solidity dynamic values
+//! - [`sol_value_to_json`] - Convert Solidity dynamic values to JSON
 
+use alloy::dyn_abi::{DynSolType, DynSolValue};
 use alloy::json_abi::{Function, JsonAbi, Param, StateMutability as AlloyStateMutability};
+use alloy::primitives::{Bytes, I256, U256};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -193,33 +199,153 @@ fn convert_state_mutability(sm: AlloyStateMutability) -> StateMutability {
 }
 
 // =============================================================================
-// Standalone Functions (for backwards compatibility during migration)
+// JSON <-> Solidity Value Conversion
 // =============================================================================
 
-/// Parse a JSON ABI string into a JsonAbi struct
-pub fn parse_abi(abi_json: &str) -> Result<JsonAbi, Error> {
-    Abi::parse(abi_json).map(|a| a.0)
+/// Convert a JSON value to a Solidity dynamic value based on the type string.
+///
+/// Supports common Solidity types: address, bool, uint*, int*, bytes, string,
+/// fixed bytes, and arrays.
+pub fn json_to_sol_value(type_str: &str, value: &serde_json::Value) -> Result<DynSolValue, Error> {
+    let sol_type: DynSolType = type_str
+        .parse()
+        .map_err(|e| Error::AbiEncode(format!("Unknown type '{}': {}", type_str, e)))?;
+
+    match sol_type {
+        DynSolType::Address => {
+            let addr_str = value
+                .as_str()
+                .ok_or_else(|| Error::AbiEncode("Expected string for address".into()))?;
+            let addr: alloy::primitives::Address = addr_str
+                .parse()
+                .map_err(|e| Error::AbiEncode(format!("Invalid address '{}': {}", addr_str, e)))?;
+            Ok(DynSolValue::Address(addr))
+        }
+        DynSolType::Bool => {
+            let b = value
+                .as_bool()
+                .ok_or_else(|| Error::AbiEncode("Expected boolean".into()))?;
+            Ok(DynSolValue::Bool(b))
+        }
+        DynSolType::Uint(bits) => {
+            let n = parse_uint(value)?;
+            Ok(DynSolValue::Uint(n, bits))
+        }
+        DynSolType::Int(bits) => {
+            let n = parse_int(value)?;
+            Ok(DynSolValue::Int(n, bits))
+        }
+        DynSolType::Bytes => {
+            let hex_str = value
+                .as_str()
+                .ok_or_else(|| Error::AbiEncode("Expected hex string for bytes".into()))?;
+            let bytes: Bytes = hex_str
+                .parse()
+                .map_err(|e| Error::AbiEncode(format!("Invalid hex: {}", e)))?;
+            Ok(DynSolValue::Bytes(bytes.to_vec()))
+        }
+        DynSolType::String => {
+            let s = value
+                .as_str()
+                .ok_or_else(|| Error::AbiEncode("Expected string".into()))?;
+            Ok(DynSolValue::String(s.to_string()))
+        }
+        DynSolType::FixedBytes(size) => {
+            let hex_str = value
+                .as_str()
+                .ok_or_else(|| Error::AbiEncode("Expected hex string".into()))?;
+            let bytes: Bytes = hex_str
+                .parse()
+                .map_err(|e| Error::AbiEncode(format!("Invalid hex: {}", e)))?;
+            if bytes.len() != size {
+                return Err(Error::AbiEncode(format!(
+                    "Expected {} bytes, got {}",
+                    size,
+                    bytes.len()
+                )));
+            }
+            Ok(DynSolValue::FixedBytes(
+                alloy::primitives::FixedBytes::from_slice(&bytes),
+                size,
+            ))
+        }
+        DynSolType::Array(inner) => {
+            let arr = value
+                .as_array()
+                .ok_or_else(|| Error::AbiEncode("Expected array".into()))?;
+            let inner_str = inner.to_string();
+            let values: Result<Vec<_>, _> = arr
+                .iter()
+                .map(|v| json_to_sol_value(&inner_str, v))
+                .collect();
+            Ok(DynSolValue::Array(values?))
+        }
+        _ => Err(Error::AbiEncode(format!("Unsupported type: {}", type_str))),
+    }
 }
 
-/// Categorize contract functions into read (view/pure) and write (nonpayable/payable)
-pub fn categorize_functions(abi_json: &str) -> Result<ParsedFunctions, Error> {
-    Abi::parse(abi_json).map(|a| a.functions())
+/// Parse a JSON value as a U256 unsigned integer.
+pub fn parse_uint(value: &serde_json::Value) -> Result<U256, Error> {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                Ok(U256::from(u))
+            } else if let Some(i) = n.as_i64() {
+                if i >= 0 {
+                    Ok(U256::from(i as u64))
+                } else {
+                    Err(Error::AbiEncode(
+                        "Negative number not allowed for uint".into(),
+                    ))
+                }
+            } else {
+                Err(Error::AbiEncode("Number too large".into()))
+            }
+        }
+        serde_json::Value::String(s) => s
+            .parse::<U256>()
+            .map_err(|e| Error::AbiEncode(format!("Invalid uint: {}", e))),
+        _ => Err(Error::AbiEncode(
+            "Expected number or string for uint".into(),
+        )),
+    }
 }
 
-/// Get a specific function from an ABI by name (returns first overload if multiple exist)
-pub fn get_function(abi_json: &str, function_name: &str) -> Result<Function, Error> {
-    let abi = Abi::parse(abi_json)?;
-    abi.function(function_name)
-        .cloned()
-        .ok_or_else(|| Error::function_not_found("unknown", function_name))
+/// Parse a JSON value as an I256 signed integer.
+pub fn parse_int(value: &serde_json::Value) -> Result<I256, Error> {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(I256::try_from(i).unwrap())
+            } else {
+                Err(Error::AbiEncode("Number out of range".into()))
+            }
+        }
+        serde_json::Value::String(s) => s
+            .parse::<I256>()
+            .map_err(|e| Error::AbiEncode(format!("Invalid int: {}", e))),
+        _ => Err(Error::AbiEncode("Expected number or string for int".into())),
+    }
 }
 
-/// Get all overloads of a function by name
-pub fn get_function_overloads(abi_json: &str, function_name: &str) -> Result<Vec<Function>, Error> {
-    let abi = Abi::parse(abi_json)?;
-    abi.function_overloads(function_name)
-        .cloned()
-        .ok_or_else(|| Error::function_not_found("unknown", function_name))
+/// Convert a Solidity dynamic value to a JSON value.
+pub fn sol_value_to_json(value: &DynSolValue) -> serde_json::Value {
+    match value {
+        DynSolValue::Address(a) => serde_json::json!(format!("{:?}", a)),
+        DynSolValue::Bool(b) => serde_json::json!(b),
+        DynSolValue::Uint(n, _) => serde_json::json!(n.to_string()),
+        DynSolValue::Int(n, _) => serde_json::json!(n.to_string()),
+        DynSolValue::Bytes(b) => serde_json::json!(format!("0x{}", alloy::hex::encode(b))),
+        DynSolValue::FixedBytes(b, _) => serde_json::json!(format!("0x{}", alloy::hex::encode(b))),
+        DynSolValue::String(s) => serde_json::json!(s),
+        DynSolValue::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(sol_value_to_json).collect())
+        }
+        DynSolValue::Tuple(arr) => {
+            serde_json::Value::Array(arr.iter().map(sol_value_to_json).collect())
+        }
+        _ => serde_json::Value::Null,
+    }
 }
 
 #[cfg(test)]

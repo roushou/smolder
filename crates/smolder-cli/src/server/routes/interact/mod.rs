@@ -1,18 +1,17 @@
-use alloy::dyn_abi::{DynSolType, DynSolValue, FunctionExt, JsonAbiExt};
-use alloy::hex;
+mod rpc;
+
+use alloy::dyn_abi::{FunctionExt, JsonAbiExt};
 use alloy::json_abi::{Function, StateMutability};
-use alloy::network::EthereumWallet;
 use alloy::primitives::{Address, Bytes, U256};
-use alloy::providers::{Provider, ProviderBuilder};
-use alloy::rpc::types::TransactionRequest;
-use alloy::signers::local::PrivateKeySigner;
 use axum::{
     extract::{Path, State},
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use smolder_core::{abi, decrypt_private_key, Error};
+use smolder_core::{
+    decrypt_private_key, json_to_sol_value, sol_value_to_json, Abi, Error, FunctionInfo,
+};
 use smolder_db::{
     CallHistoryFilter, CallHistoryRepository, CallHistoryUpdate, CallHistoryView, CallType,
     DeploymentId, DeploymentRepository, DeploymentView, Network, NetworkRepository, NewCallHistory,
@@ -36,8 +35,8 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Serialize)]
 struct FunctionsResponse {
-    read: Vec<abi::FunctionInfo>,
-    write: Vec<abi::FunctionInfo>,
+    read: Vec<FunctionInfo>,
+    write: Vec<FunctionInfo>,
 }
 
 async fn get_functions(
@@ -48,8 +47,8 @@ async fn get_functions(
     let deployment = get_deployment_by_id(&state, id).await?;
 
     // Parse and categorize functions
-    let parsed = abi::categorize_functions(&deployment.abi)
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let abi = Abi::parse(&deployment.abi).map_err(|e| ApiError::internal(e.to_string()))?;
+    let parsed = abi.functions();
 
     Ok(Json(FunctionsResponse {
         read: parsed.read,
@@ -81,9 +80,13 @@ async fn execute_call(
     let network = get_network_by_name(&state, &deployment.network_name).await?;
 
     // Get function from ABI
-    let function = abi::get_function(&deployment.abi, &payload.function_name).map_err(|_| {
-        ApiError::not_found(format!("Function '{}' not found", payload.function_name))
-    })?;
+    let abi = Abi::parse(&deployment.abi).map_err(|e| ApiError::internal(e.to_string()))?;
+    let function = abi
+        .function(&payload.function_name)
+        .cloned()
+        .ok_or_else(|| {
+            ApiError::not_found(format!("Function '{}' not found", payload.function_name))
+        })?;
 
     // Verify it's a read function
     if !matches!(
@@ -96,8 +99,7 @@ async fn execute_call(
         )));
     }
 
-    let call_data =
-        encode_function_call(&function, &payload.params).map_err(ApiError::bad_request)?;
+    let call_data = encode_function_call(&function, &payload.params).map_err(ApiError::from)?;
 
     // Execute eth_call
     let contract_address: Address = deployment
@@ -105,11 +107,11 @@ async fn execute_call(
         .parse()
         .map_err(|e| ApiError::internal(format!("Invalid address: {}", e)))?;
 
-    let result = execute_eth_call(&network.rpc_url, contract_address, call_data)
+    let result = rpc::execute_eth_call(&network.rpc_url, contract_address, call_data)
         .await
-        .map_err(|e| ApiError::new("RPC_ERROR", e))?;
+        .map_err(ApiError::from)?;
 
-    let decoded = decode_function_result(&function, &result).map_err(ApiError::internal)?;
+    let decoded = decode_function_result(&function, &result).map_err(ApiError::from)?;
 
     Ok(Json(CallResponse { result: decoded }))
 }
@@ -142,9 +144,14 @@ async fn execute_send(
     let network = get_network_by_name(&state, &deployment.network_name).await?;
     let wallet = get_wallet_by_name(&state, &payload.wallet_name).await?;
 
-    let function = abi::get_function(&deployment.abi, &payload.function_name).map_err(|_| {
-        ApiError::not_found(format!("Function '{}' not found", payload.function_name))
-    })?;
+    // Get function from ABI
+    let abi = Abi::parse(&deployment.abi).map_err(|e| ApiError::internal(e.to_string()))?;
+    let function = abi
+        .function(&payload.function_name)
+        .cloned()
+        .ok_or_else(|| {
+            ApiError::not_found(format!("Function '{}' not found", payload.function_name))
+        })?;
 
     // Verify it's a write function
     if matches!(
@@ -157,8 +164,7 @@ async fn execute_send(
         )));
     }
 
-    let call_data =
-        encode_function_call(&function, &payload.params).map_err(ApiError::bad_request)?;
+    let call_data = encode_function_call(&function, &payload.params).map_err(ApiError::from)?;
 
     // Parse value if provided
     let value = match &payload.value {
@@ -189,7 +195,7 @@ async fn execute_send(
         .parse()
         .map_err(|e| ApiError::internal(format!("Invalid address: {}", e)))?;
 
-    let tx_hash = execute_transaction(
+    let tx_hash = rpc::execute_transaction(
         &network.rpc_url,
         &private_key,
         contract_address,
@@ -200,11 +206,11 @@ async fn execute_send(
     .map_err(|e| {
         // Update history with error
         let state_clone = state.clone();
-        let error = e.clone();
+        let error_msg = e.to_string();
         tokio::spawn(async move {
-            let _ = update_call_history_error(&state_clone, history_id, &error).await;
+            let _ = update_call_history_error(&state_clone, history_id, &error_msg).await;
         });
-        ApiError::new("RPC_ERROR", e)
+        ApiError::from(e)
     })?;
 
     // Update history with pending tx
@@ -256,138 +262,38 @@ async fn get_wallet_by_name(state: &AppState, name: &str) -> Result<WalletWithKe
     wallet.ok_or_else(|| ApiError::from(Error::WalletNotFound(name.to_string())))
 }
 
-fn encode_function_call(
-    function: &Function,
-    params: &[serde_json::Value],
-) -> Result<Bytes, String> {
+fn encode_function_call(function: &Function, params: &[serde_json::Value]) -> Result<Bytes, Error> {
     if params.len() != function.inputs.len() {
-        return Err(format!(
+        return Err(Error::AbiEncode(format!(
             "Expected {} parameters, got {}",
             function.inputs.len(),
             params.len()
-        ));
+        )));
     }
 
     let mut sol_values = Vec::new();
     for (i, (param, value)) in function.inputs.iter().zip(params.iter()).enumerate() {
         let sol_value = json_to_sol_value(&param.ty.to_string(), value)
-            .map_err(|e| format!("Parameter {}: {}", i, e))?;
+            .map_err(|e| Error::AbiEncode(format!("Parameter {}: {}", i, e)))?;
         sol_values.push(sol_value);
     }
 
     let encoded = function
         .abi_encode_input(&sol_values)
-        .map_err(|e| format!("Failed to encode function call: {}", e))?;
+        .map_err(|e| Error::AbiEncode(format!("Failed to encode function call: {}", e)))?;
 
     Ok(Bytes::from(encoded))
 }
 
-fn json_to_sol_value(type_str: &str, value: &serde_json::Value) -> Result<DynSolValue, String> {
-    let sol_type: DynSolType = type_str
-        .parse()
-        .map_err(|e| format!("Unknown type '{}': {}", type_str, e))?;
-
-    match sol_type {
-        DynSolType::Address => {
-            let addr_str = value.as_str().ok_or("Expected string for address")?;
-            let addr: Address = addr_str
-                .parse()
-                .map_err(|e| format!("Invalid address '{}': {}", addr_str, e))?;
-            Ok(DynSolValue::Address(addr))
-        }
-        DynSolType::Bool => {
-            let b = value.as_bool().ok_or("Expected boolean")?;
-            Ok(DynSolValue::Bool(b))
-        }
-        DynSolType::Uint(bits) => {
-            let n = parse_uint(value)?;
-            Ok(DynSolValue::Uint(n, bits))
-        }
-        DynSolType::Int(bits) => {
-            let n = parse_int(value)?;
-            Ok(DynSolValue::Int(n, bits))
-        }
-        DynSolType::Bytes => {
-            let hex_str = value.as_str().ok_or("Expected hex string for bytes")?;
-            let bytes: Bytes = hex_str.parse().map_err(|e| format!("Invalid hex: {}", e))?;
-            Ok(DynSolValue::Bytes(bytes.to_vec()))
-        }
-        DynSolType::String => {
-            let s = value.as_str().ok_or("Expected string")?;
-            Ok(DynSolValue::String(s.to_string()))
-        }
-        DynSolType::FixedBytes(size) => {
-            let hex_str = value.as_str().ok_or("Expected hex string")?;
-            let bytes: Bytes = hex_str.parse().map_err(|e| format!("Invalid hex: {}", e))?;
-            if bytes.len() != size {
-                return Err(format!("Expected {} bytes, got {}", size, bytes.len()));
-            }
-            Ok(DynSolValue::FixedBytes(
-                alloy::primitives::FixedBytes::from_slice(&bytes),
-                size,
-            ))
-        }
-        DynSolType::Array(inner) => {
-            let arr = value.as_array().ok_or("Expected array")?;
-            let inner_str = inner.to_string();
-            let values: Result<Vec<_>, _> = arr
-                .iter()
-                .map(|v| json_to_sol_value(&inner_str, v))
-                .collect();
-            Ok(DynSolValue::Array(values?))
-        }
-        _ => Err(format!("Unsupported type: {}", type_str)),
-    }
-}
-
-fn parse_uint(value: &serde_json::Value) -> Result<U256, String> {
-    match value {
-        serde_json::Value::Number(n) => {
-            if let Some(u) = n.as_u64() {
-                Ok(U256::from(u))
-            } else if let Some(i) = n.as_i64() {
-                if i >= 0 {
-                    Ok(U256::from(i as u64))
-                } else {
-                    Err("Negative number not allowed for uint".to_string())
-                }
-            } else {
-                Err("Number too large".to_string())
-            }
-        }
-        serde_json::Value::String(s) => s
-            .parse::<U256>()
-            .map_err(|e| format!("Invalid uint: {}", e)),
-        _ => Err("Expected number or string for uint".to_string()),
-    }
-}
-
-fn parse_int(value: &serde_json::Value) -> Result<alloy::primitives::I256, String> {
-    match value {
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(alloy::primitives::I256::try_from(i).unwrap())
-            } else {
-                Err("Number out of range".to_string())
-            }
-        }
-        serde_json::Value::String(s) => s
-            .parse::<alloy::primitives::I256>()
-            .map_err(|e| format!("Invalid int: {}", e)),
-        _ => Err("Expected number or string for int".to_string()),
-    }
-}
-
-fn decode_function_result(function: &Function, data: &Bytes) -> Result<serde_json::Value, String> {
+fn decode_function_result(function: &Function, data: &Bytes) -> Result<serde_json::Value, Error> {
     if function.outputs.is_empty() {
         return Ok(serde_json::Value::Null);
     }
 
     let decoded = function
         .abi_decode_output(data)
-        .map_err(|e| format!("Failed to decode result: {}", e))?;
+        .map_err(|e| Error::AbiDecode(format!("Failed to decode result: {}", e)))?;
 
-    // Convert to JSON
     let result: Vec<serde_json::Value> = decoded.iter().map(sol_value_to_json).collect();
 
     if result.len() == 1 {
@@ -395,73 +301,6 @@ fn decode_function_result(function: &Function, data: &Bytes) -> Result<serde_jso
     } else {
         Ok(serde_json::Value::Array(result))
     }
-}
-
-fn sol_value_to_json(value: &DynSolValue) -> serde_json::Value {
-    match value {
-        DynSolValue::Address(a) => serde_json::json!(format!("{:?}", a)),
-        DynSolValue::Bool(b) => serde_json::json!(b),
-        DynSolValue::Uint(n, _) => serde_json::json!(n.to_string()),
-        DynSolValue::Int(n, _) => serde_json::json!(n.to_string()),
-        DynSolValue::Bytes(b) => serde_json::json!(format!("0x{}", hex::encode(b))),
-        DynSolValue::FixedBytes(b, _) => serde_json::json!(format!("0x{}", hex::encode(b))),
-        DynSolValue::String(s) => serde_json::json!(s),
-        DynSolValue::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(sol_value_to_json).collect())
-        }
-        DynSolValue::Tuple(arr) => {
-            serde_json::Value::Array(arr.iter().map(sol_value_to_json).collect())
-        }
-        _ => serde_json::Value::Null,
-    }
-}
-
-async fn execute_eth_call(rpc_url: &str, to: Address, data: Bytes) -> Result<Bytes, String> {
-    let url: reqwest::Url = rpc_url
-        .parse()
-        .map_err(|e| format!("Invalid RPC URL: {}", e))?;
-    let provider = ProviderBuilder::new().connect_http(url);
-
-    let tx = TransactionRequest::default().to(to).input(data.into());
-
-    let result: Bytes = provider
-        .call(tx)
-        .await
-        .map_err(|e| format!("RPC call failed: {}", e))?;
-
-    Ok(result)
-}
-
-async fn execute_transaction(
-    rpc_url: &str,
-    private_key: &str,
-    to: Address,
-    data: Bytes,
-    value: Option<U256>,
-) -> Result<String, String> {
-    let signer: PrivateKeySigner = private_key
-        .parse()
-        .map_err(|e| format!("Invalid private key: {}", e))?;
-
-    let wallet = EthereumWallet::from(signer);
-
-    let url: reqwest::Url = rpc_url
-        .parse()
-        .map_err(|e| format!("Invalid RPC URL: {}", e))?;
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(url);
-
-    let mut tx = TransactionRequest::default().to(to).input(data.into());
-
-    if let Some(v) = value {
-        tx = tx.value(v);
-    }
-
-    let pending = provider
-        .send_transaction(tx)
-        .await
-        .map_err(|e| format!("Failed to send transaction: {}", e))?;
-
-    Ok(format!("{:?}", pending.tx_hash()))
 }
 
 async fn record_call_history(

@@ -3,7 +3,7 @@
 use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 
-use smolder_db::Database;
+use smolder_db::{Database, DeploymentRepository};
 
 /// Get the address of a deployed contract
 #[derive(Args)]
@@ -20,9 +20,8 @@ impl GetCommand {
     pub async fn run(self) -> Result<()> {
         let db = Database::connect().await?;
 
-        let deployment = db
-            .get_current_deployment(&self.contract, &self.network)
-            .await?;
+        let deployment =
+            DeploymentRepository::get_current(&db, &self.contract, &self.network).await?;
 
         match deployment {
             Some(d) => {

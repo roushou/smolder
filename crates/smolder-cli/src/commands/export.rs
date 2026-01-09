@@ -7,7 +7,7 @@ use color_eyre::eyre::{eyre, Result};
 use console::style;
 use serde::Serialize;
 
-use smolder_db::Database;
+use smolder_db::{Database, DeploymentRepository};
 
 /// Export deployments to various formats
 #[derive(Args)]
@@ -24,7 +24,7 @@ pub struct ExportCommand {
 impl ExportCommand {
     pub async fn run(self) -> Result<()> {
         let db = Database::connect().await?;
-        let deployments = db.get_all_deployments_for_export().await?;
+        let deployments = DeploymentRepository::list_for_export(&db, None).await?;
 
         if deployments.is_empty() {
             println!("No deployments to export.");

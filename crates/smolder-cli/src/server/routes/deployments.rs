@@ -50,7 +50,7 @@ async fn get_by_contract_and_network(
         .await?
         .ok_or_else(not_found)?;
 
-    let view = DeploymentRepository::get_view_by_id(state.db(), deployment.id.into())
+    let view = DeploymentRepository::get_view_by_id(state.db(), deployment.id)
         .await?
         .ok_or_else(not_found)?;
 

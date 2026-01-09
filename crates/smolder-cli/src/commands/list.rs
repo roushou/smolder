@@ -4,7 +4,7 @@ use clap::Args;
 use color_eyre::eyre::Result;
 use console::style;
 
-use smolder_db::Database;
+use smolder_db::{Database, DeploymentFilter, DeploymentRepository};
 
 /// List all deployments
 #[derive(Args)]
@@ -17,7 +17,11 @@ pub struct ListCommand {
 impl ListCommand {
     pub async fn run(self) -> Result<()> {
         let db = Database::connect().await?;
-        let deployments = db.list_deployments(self.network.as_deref()).await?;
+        let filter = match &self.network {
+            Some(n) => DeploymentFilter::for_network(n),
+            None => DeploymentFilter::current(),
+        };
+        let deployments = DeploymentRepository::list(&db, filter).await?;
 
         if deployments.is_empty() {
             println!("No deployments found.");

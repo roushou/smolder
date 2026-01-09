@@ -32,8 +32,8 @@ pub fn create_router(state: AppState) -> Router {
 mod tests {
     use axum::{body::Body, http::Request, Router};
     use smolder_db::{
-        ChainId, Contract, Database, DeploymentView, Network, NewContract, NewDeployment,
-        NewNetwork,
+        ChainId, Contract, ContractRepository, Database, DeploymentRepository, DeploymentView,
+        Network, NetworkRepository, NewContract, NewDeployment, NewNetwork,
     };
     use tower::ServiceExt;
 
@@ -41,36 +41,43 @@ mod tests {
         let db = Database::connect_to(":memory:").await.unwrap();
         db.init_schema().await.unwrap();
 
-        // Insert test data using database methods
-        let network_id = db
-            .upsert_network(&NewNetwork {
+        // Insert test data using repository traits
+        let network = NetworkRepository::upsert(
+            &db,
+            &NewNetwork {
                 name: "testnet".to_string(),
                 chain_id: ChainId(12345),
                 rpc_url: "https://rpc.test.xyz".to_string(),
                 explorer_url: Some("https://explorer.test.xyz".to_string()),
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
 
-        let contract_id = db
-            .upsert_contract(&NewContract {
+        let contract = ContractRepository::upsert(
+            &db,
+            &NewContract {
                 name: "TestToken".to_string(),
                 source_path: "src/TestToken.sol".to_string(),
                 abi: r#"[{"type":"function","name":"transfer"}]"#.to_string(),
                 bytecode_hash: "0xabc123".to_string(),
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
 
-        db.create_deployment(&NewDeployment {
-            contract_id,
-            network_id,
-            address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
-            deployer: "0xdeployer".to_string(),
-            tx_hash: "0xtxhash".to_string(),
-            block_number: Some(100),
-            constructor_args: None,
-        })
+        DeploymentRepository::create(
+            &db,
+            &NewDeployment {
+                contract_id: contract.id,
+                network_id: network.id,
+                address: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+                deployer: "0xdeployer".to_string(),
+                tx_hash: "0xtxhash".to_string(),
+                block_number: Some(100),
+                constructor_args: None,
+            },
+        )
         .await
         .unwrap();
 

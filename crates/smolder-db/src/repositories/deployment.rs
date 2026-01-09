@@ -2,85 +2,47 @@
 
 use async_trait::async_trait;
 use smolder_core::{DeploymentId, Result};
+use sqlx::QueryBuilder;
 
 use crate::models::{Deployment, DeploymentView, NewDeployment};
 use crate::traits::{DeploymentFilter, DeploymentRepository};
 use crate::Database;
 
+const DEPLOYMENT_VIEW_SELECT: &str = r#"
+    SELECT
+        d.id, c.name as contract_name, n.name as network_name, n.chain_id,
+        d.address, d.deployer, d.tx_hash, d.block_number, d.version,
+        d.deployed_at, d.is_current, c.abi
+    FROM deployments d
+    JOIN contracts c ON d.contract_id = c.id
+    JOIN networks n ON d.network_id = n.id
+"#;
+
 #[async_trait]
 impl DeploymentRepository for Database {
     async fn list(&self, filter: DeploymentFilter) -> Result<Vec<DeploymentView>> {
-        let deployments = match (&filter.network, filter.current_only) {
-            (Some(network), true) => {
-                sqlx::query_as::<_, DeploymentView>(
-                    r#"
-                    SELECT
-                        d.id, c.name as contract_name, n.name as network_name, n.chain_id,
-                        d.address, d.deployer, d.tx_hash, d.block_number, d.version,
-                        d.deployed_at, d.is_current, c.abi
-                    FROM deployments d
-                    JOIN contracts c ON d.contract_id = c.id
-                    JOIN networks n ON d.network_id = n.id
-                    WHERE n.name = ? AND d.is_current = TRUE
-                    ORDER BY n.name, c.name
-                    "#,
-                )
-                .bind(network)
-                .fetch_all(&self.pool)
-                .await?
-            }
-            (None, true) => {
-                sqlx::query_as::<_, DeploymentView>(
-                    r#"
-                    SELECT
-                        d.id, c.name as contract_name, n.name as network_name, n.chain_id,
-                        d.address, d.deployer, d.tx_hash, d.block_number, d.version,
-                        d.deployed_at, d.is_current, c.abi
-                    FROM deployments d
-                    JOIN contracts c ON d.contract_id = c.id
-                    JOIN networks n ON d.network_id = n.id
-                    WHERE d.is_current = TRUE
-                    ORDER BY n.name, c.name
-                    "#,
-                )
-                .fetch_all(&self.pool)
-                .await?
-            }
-            (Some(network), false) => {
-                sqlx::query_as::<_, DeploymentView>(
-                    r#"
-                    SELECT
-                        d.id, c.name as contract_name, n.name as network_name, n.chain_id,
-                        d.address, d.deployer, d.tx_hash, d.block_number, d.version,
-                        d.deployed_at, d.is_current, c.abi
-                    FROM deployments d
-                    JOIN contracts c ON d.contract_id = c.id
-                    JOIN networks n ON d.network_id = n.id
-                    WHERE n.name = ?
-                    ORDER BY n.name, c.name, d.version DESC
-                    "#,
-                )
-                .bind(network)
-                .fetch_all(&self.pool)
-                .await?
-            }
-            (None, false) => {
-                sqlx::query_as::<_, DeploymentView>(
-                    r#"
-                    SELECT
-                        d.id, c.name as contract_name, n.name as network_name, n.chain_id,
-                        d.address, d.deployer, d.tx_hash, d.block_number, d.version,
-                        d.deployed_at, d.is_current, c.abi
-                    FROM deployments d
-                    JOIN contracts c ON d.contract_id = c.id
-                    JOIN networks n ON d.network_id = n.id
-                    ORDER BY n.name, c.name, d.version DESC
-                    "#,
-                )
-                .fetch_all(&self.pool)
-                .await?
-            }
-        };
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(DEPLOYMENT_VIEW_SELECT);
+
+        let mut has_where = false;
+        if let Some(ref network) = filter.network {
+            builder.push(" WHERE n.name = ");
+            builder.push_bind(network);
+            has_where = true;
+        }
+        if filter.current_only {
+            builder.push(if has_where { " AND " } else { " WHERE " });
+            builder.push("d.is_current = TRUE");
+        }
+
+        builder.push(" ORDER BY n.name, c.name");
+        if !filter.current_only {
+            builder.push(", d.version DESC");
+        }
+
+        let deployments = builder
+            .build_query_as::<DeploymentView>()
+            .fetch_all(&self.pool)
+            .await?;
         Ok(deployments)
     }
 
@@ -110,21 +72,14 @@ impl DeploymentRepository for Database {
     }
 
     async fn get_view_by_id(&self, id: DeploymentId) -> Result<Option<DeploymentView>> {
-        let deployment = sqlx::query_as::<_, DeploymentView>(
-            r#"
-            SELECT
-                d.id, c.name as contract_name, n.name as network_name, n.chain_id,
-                d.address, d.deployer, d.tx_hash, d.block_number, d.version,
-                d.deployed_at, d.is_current, c.abi
-            FROM deployments d
-            JOIN contracts c ON d.contract_id = c.id
-            JOIN networks n ON d.network_id = n.id
-            WHERE d.id = ?
-            "#,
-        )
-        .bind(id.0)
-        .fetch_optional(&self.pool)
-        .await?;
+        let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(DEPLOYMENT_VIEW_SELECT);
+        builder.push(" WHERE d.id = ");
+        builder.push_bind(id.0);
+
+        let deployment = builder
+            .build_query_as::<DeploymentView>()
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(deployment)
     }
 

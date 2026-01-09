@@ -5,12 +5,14 @@ use std::process::Command;
 use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 use console::style;
-use smolder_db::{ChainId, NewContract, NewDeployment, NewNetwork};
+use smolder_db::{
+    ChainId, ContractRepository, Database, DeploymentRepository, NetworkRepository, NewContract,
+    NewDeployment, NewNetwork,
+};
 
 use crate::config::FoundryConfig;
 use crate::forge::{BroadcastParser, ForgeBroadcastParser};
 use crate::rpc::get_chain_id;
-use smolder_db::Database;
 
 /// Deploy contracts via forge script and track in database
 #[derive(Args)]
@@ -98,37 +100,44 @@ impl DeployCommand {
         let db = Database::connect().await?;
 
         // Ensure network exists in database
-        let network_id = db
-            .upsert_network(&NewNetwork {
+        let db_network = NetworkRepository::upsert(
+            &db,
+            &NewNetwork {
                 name: network.name.clone(),
                 chain_id: ChainId::from(chain_id),
                 rpc_url: network.rpc_url.clone(),
                 explorer_url: network.explorer_url.clone(),
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         // Store each deployment
         for deployment in &deployments {
             // Upsert contract
-            let contract_id = db
-                .upsert_contract(&NewContract {
+            let contract = ContractRepository::upsert(
+                &db,
+                &NewContract {
                     name: deployment.contract_name.clone(),
                     source_path: deployment.source_path.clone(),
                     abi: deployment.abi.clone(),
                     bytecode_hash: deployment.bytecode_hash.clone(),
-                })
-                .await?;
+                },
+            )
+            .await?;
 
             // Create deployment record
-            db.create_deployment(&NewDeployment {
-                contract_id,
-                network_id,
-                address: deployment.address.clone(),
-                deployer: deployment.deployer.clone(),
-                tx_hash: deployment.tx_hash.clone(),
-                block_number: deployment.block_number,
-                constructor_args: deployment.constructor_args.clone(),
-            })
+            DeploymentRepository::create(
+                &db,
+                &NewDeployment {
+                    contract_id: contract.id,
+                    network_id: db_network.id,
+                    address: deployment.address.clone(),
+                    deployer: deployment.deployer.clone(),
+                    tx_hash: deployment.tx_hash.clone(),
+                    block_number: deployment.block_number,
+                    constructor_args: deployment.constructor_args.clone(),
+                },
+            )
             .await?;
 
             println!(

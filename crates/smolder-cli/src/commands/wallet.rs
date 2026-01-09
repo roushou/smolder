@@ -6,9 +6,7 @@ use color_eyre::eyre::{eyre, Result};
 use console::style;
 use dialoguer::{Confirm, Password};
 use smolder_core::encrypt_private_key;
-use smolder_db::NewWallet;
-
-use smolder_db::Database;
+use smolder_db::{Database, NewWallet, WalletRepository};
 
 /// Manage wallets for signing transactions
 #[derive(Args)]
@@ -57,7 +55,10 @@ impl AddWalletCommand {
         let db = Database::connect().await?;
 
         // Check if wallet name already exists
-        if db.get_wallet(&self.name).await?.is_some() {
+        if WalletRepository::get_by_name(&db, &self.name)
+            .await?
+            .is_some()
+        {
             return Err(eyre!("Wallet '{}' already exists", self.name));
         }
 
@@ -88,7 +89,10 @@ impl AddWalletCommand {
         let address = format!("{:?}", signer.address());
 
         // Check if address already exists
-        if db.get_wallet_by_address(&address).await?.is_some() {
+        if WalletRepository::get_by_address(&db, &address)
+            .await?
+            .is_some()
+        {
             return Err(eyre!(
                 "A wallet with address {} already exists",
                 style(&address).yellow()
@@ -99,11 +103,14 @@ impl AddWalletCommand {
         let encrypted_key = encrypt_private_key(&private_key)
             .map_err(|e| eyre!("Failed to encrypt private key: {}", e))?;
 
-        db.create_wallet(&NewWallet {
-            name: self.name.clone(),
-            address: address.clone(),
-            encrypted_key,
-        })
+        WalletRepository::create(
+            &db,
+            &NewWallet {
+                name: self.name.clone(),
+                address: address.clone(),
+                encrypted_key,
+            },
+        )
         .await?;
 
         println!();
@@ -125,7 +132,7 @@ pub struct ListWalletsCommand;
 impl ListWalletsCommand {
     pub async fn run(self) -> Result<()> {
         let db = Database::connect().await?;
-        let wallets = db.list_wallets().await?;
+        let wallets = WalletRepository::list(&db).await?;
 
         if wallets.is_empty() {
             println!("{} No wallets found", style("!").yellow());
@@ -171,8 +178,7 @@ impl RemoveWalletCommand {
         let db = Database::connect().await?;
 
         // Check if wallet exists
-        let wallet = db
-            .get_wallet(&self.name)
+        let wallet = WalletRepository::get_by_name(&db, &self.name)
             .await?
             .ok_or_else(|| eyre!("Wallet '{}' not found", self.name))?;
 
@@ -198,7 +204,7 @@ impl RemoveWalletCommand {
         }
 
         // Delete wallet from database
-        db.delete_wallet(&self.name).await?;
+        WalletRepository::delete(&db, &self.name).await?;
 
         println!();
         println!(

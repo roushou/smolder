@@ -1,13 +1,13 @@
-use alloy::dyn_abi::{DynSolType, DynSolValue};
+use alloy::dyn_abi::DynSolValue;
 use alloy::hex;
 use alloy::network::{EthereumWallet, TransactionBuilder};
-use alloy::primitives::{keccak256, Address, Bytes, U256};
+use alloy::primitives::{keccak256, Bytes, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
-use smolder_core::{decrypt_private_key, Error, ParamInfo};
+use smolder_core::{decrypt_private_key, json_to_sol_value, Error, ParamInfo};
 use smolder_db::{
     ContractRepository, DeploymentId, DeploymentRepository, NetworkRepository, NewContract,
     NewDeployment, WalletRepository,
@@ -88,7 +88,7 @@ async fn deploy_contract(
         }
 
         encode_constructor_args(&constructor.inputs, &payload.constructor_args)
-            .map_err(ApiError::bad_request)?
+            .map_err(ApiError::from)?
     } else if !payload.constructor_args.is_empty() {
         return Err(ApiError::bad_request(
             "Contract has no constructor but arguments were provided",
@@ -137,7 +137,7 @@ async fn deploy_contract(
         value,
     )
     .await
-    .map_err(|e| ApiError::new("RPC_ERROR", e))?;
+    .map_err(ApiError::from)?;
 
     // Record deployment in database
     let deployment_id = if let Some(ref address) = contract_address {
@@ -184,114 +184,17 @@ async fn deploy_contract(
 fn encode_constructor_args(
     inputs: &[ParamInfo],
     args: &[serde_json::Value],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Error> {
     let mut sol_values = Vec::new();
 
     for (i, (input, value)) in inputs.iter().zip(args.iter()).enumerate() {
         let sol_value = json_to_sol_value(&input.param_type, value)
-            .map_err(|e| format!("Argument {}: {}", i, e))?;
+            .map_err(|e| Error::AbiEncode(format!("Argument {}: {}", i, e)))?;
         sol_values.push(sol_value);
     }
 
-    // Encode the values as a tuple
     let tuple = DynSolValue::Tuple(sol_values);
     Ok(tuple.abi_encode_params())
-}
-
-fn json_to_sol_value(type_str: &str, value: &serde_json::Value) -> Result<DynSolValue, String> {
-    let sol_type: DynSolType = type_str
-        .parse()
-        .map_err(|e| format!("Unknown type '{}': {}", type_str, e))?;
-
-    match sol_type {
-        DynSolType::Address => {
-            let addr_str = value.as_str().ok_or("Expected string for address")?;
-            let addr: Address = addr_str
-                .parse()
-                .map_err(|e| format!("Invalid address '{}': {}", addr_str, e))?;
-            Ok(DynSolValue::Address(addr))
-        }
-        DynSolType::Bool => {
-            let b = value.as_bool().ok_or("Expected boolean")?;
-            Ok(DynSolValue::Bool(b))
-        }
-        DynSolType::Uint(bits) => {
-            let n = parse_uint(value)?;
-            Ok(DynSolValue::Uint(n, bits))
-        }
-        DynSolType::Int(bits) => {
-            let n = parse_int(value)?;
-            Ok(DynSolValue::Int(n, bits))
-        }
-        DynSolType::Bytes => {
-            let hex_str = value.as_str().ok_or("Expected hex string for bytes")?;
-            let bytes: Bytes = hex_str.parse().map_err(|e| format!("Invalid hex: {}", e))?;
-            Ok(DynSolValue::Bytes(bytes.to_vec()))
-        }
-        DynSolType::String => {
-            let s = value.as_str().ok_or("Expected string")?;
-            Ok(DynSolValue::String(s.to_string()))
-        }
-        DynSolType::FixedBytes(size) => {
-            let hex_str = value.as_str().ok_or("Expected hex string")?;
-            let bytes: Bytes = hex_str.parse().map_err(|e| format!("Invalid hex: {}", e))?;
-            if bytes.len() != size {
-                return Err(format!("Expected {} bytes, got {}", size, bytes.len()));
-            }
-            Ok(DynSolValue::FixedBytes(
-                alloy::primitives::FixedBytes::from_slice(&bytes),
-                size,
-            ))
-        }
-        DynSolType::Array(inner) => {
-            let arr = value.as_array().ok_or("Expected array")?;
-            let inner_str = inner.to_string();
-            let values: Result<Vec<_>, _> = arr
-                .iter()
-                .map(|v| json_to_sol_value(&inner_str, v))
-                .collect();
-            Ok(DynSolValue::Array(values?))
-        }
-        _ => Err(format!("Unsupported type: {}", type_str)),
-    }
-}
-
-fn parse_uint(value: &serde_json::Value) -> Result<U256, String> {
-    match value {
-        serde_json::Value::Number(n) => {
-            if let Some(u) = n.as_u64() {
-                Ok(U256::from(u))
-            } else if let Some(i) = n.as_i64() {
-                if i >= 0 {
-                    Ok(U256::from(i as u64))
-                } else {
-                    Err("Negative number not allowed for uint".to_string())
-                }
-            } else {
-                Err("Number too large".to_string())
-            }
-        }
-        serde_json::Value::String(s) => s
-            .parse::<U256>()
-            .map_err(|e| format!("Invalid uint: {}", e)),
-        _ => Err("Expected number or string for uint".to_string()),
-    }
-}
-
-fn parse_int(value: &serde_json::Value) -> Result<alloy::primitives::I256, String> {
-    match value {
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(alloy::primitives::I256::try_from(i).unwrap())
-            } else {
-                Err("Number out of range".to_string())
-            }
-        }
-        serde_json::Value::String(s) => s
-            .parse::<alloy::primitives::I256>()
-            .map_err(|e| format!("Invalid int: {}", e)),
-        _ => Err("Expected number or string for int".to_string()),
-    }
 }
 
 async fn execute_deploy(
@@ -299,16 +202,16 @@ async fn execute_deploy(
     private_key: &str,
     data: Bytes,
     value: Option<U256>,
-) -> Result<(String, Option<String>), String> {
+) -> Result<(String, Option<String>), Error> {
     let signer: PrivateKeySigner = private_key
         .parse()
-        .map_err(|e| format!("Invalid private key: {}", e))?;
+        .map_err(|e| Error::invalid_param("private_key", format!("Invalid: {}", e)))?;
 
     let wallet = EthereumWallet::from(signer);
 
     let url: reqwest::Url = rpc_url
         .parse()
-        .map_err(|e| format!("Invalid RPC URL: {}", e))?;
+        .map_err(|e| Error::invalid_param("rpc_url", format!("Invalid RPC URL: {}", e)))?;
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(url);
 
     // CREATE transaction - use with_deploy_code to properly mark as deployment
@@ -321,7 +224,7 @@ async fn execute_deploy(
     let pending = provider
         .send_transaction(tx)
         .await
-        .map_err(|e| format!("Failed to send deployment transaction: {}", e))?;
+        .map_err(|e| Error::TransactionFailed(format!("Failed to send deployment: {}", e)))?;
 
     let tx_hash = format!("{:?}", pending.tx_hash());
 
@@ -329,7 +232,7 @@ async fn execute_deploy(
     let receipt = pending
         .get_receipt()
         .await
-        .map_err(|e| format!("Failed to get transaction receipt: {}", e))?;
+        .map_err(|e| Error::Rpc(format!("Failed to get transaction receipt: {}", e)))?;
 
     let contract_address = receipt.contract_address.map(|a| format!("{:?}", a));
 
