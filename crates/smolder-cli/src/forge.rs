@@ -25,6 +25,7 @@ pub struct BroadcastTransaction {
 #[derive(Debug, Deserialize)]
 pub struct TransactionData {
     pub from: String,
+    #[allow(dead_code)]
     pub data: Option<String>,
 }
 
@@ -33,6 +34,7 @@ pub struct TransactionData {
 pub struct BroadcastReceipt {
     pub transaction_hash: String,
     pub block_number: String,
+    #[allow(dead_code)]
     pub contract_address: Option<String>,
 }
 
@@ -42,6 +44,7 @@ pub struct ContractArtifact {
     pub abi: serde_json::Value,
     pub bytecode: BytecodeObject,
     #[serde(rename = "deployedBytecode")]
+    #[allow(dead_code)]
     pub deployed_bytecode: BytecodeObject,
 }
 
@@ -56,6 +59,7 @@ struct ContractArtifactFull {
     abi: serde_json::Value,
     bytecode: BytecodeObject,
     #[serde(default)]
+    #[allow(dead_code)]
     ast: Option<serde_json::Value>,
 }
 
@@ -250,7 +254,7 @@ pub fn list_artifacts() -> Result<Vec<ArtifactInfo>> {
 
         // Only include if the source file exists in src/ directory
         // This filters out forge-std, OpenZeppelin, and other library contracts
-        if !source_exists_in_src(&src_dir, &dir_name) {
+        if !source_exists_in_src(src_dir, &dir_name) {
             continue;
         }
 
@@ -260,7 +264,7 @@ pub fn list_artifacts() -> Result<Vec<ArtifactInfo>> {
             let json_path = json_entry.path();
 
             // Only process .json files
-            if json_path.extension().map_or(true, |e| e != "json") {
+            if json_path.extension().is_none_or(|e| e != "json") {
                 continue;
             }
 
@@ -314,10 +318,8 @@ fn source_exists_in_src(src_dir: &Path, filename: &str) -> bool {
     if let Ok(entries) = std::fs::read_dir(src_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                if source_exists_in_src(&path, filename) {
-                    return true;
-                }
+            if path.is_dir() && source_exists_in_src(&path, filename) {
+                return true;
             }
         }
     }
@@ -367,12 +369,7 @@ fn extract_constructor(abi: &serde_json::Value) -> Option<ConstructorInfo> {
                 let inputs = item
                     .get("inputs")
                     .and_then(|i| i.as_array())
-                    .map(|inputs| {
-                        inputs
-                            .iter()
-                            .map(|input| parse_constructor_input(input))
-                            .collect()
-                    })
+                    .map(|inputs| inputs.iter().map(parse_constructor_input).collect())
                     .unwrap_or_default();
 
                 let state_mutability = item
@@ -408,7 +405,7 @@ fn parse_constructor_input(input: &serde_json::Value) -> ConstructorInput {
     let components = input
         .get("components")
         .and_then(|c| c.as_array())
-        .map(|arr| arr.iter().map(|c| parse_constructor_input(c)).collect());
+        .map(|arr| arr.iter().map(parse_constructor_input).collect());
 
     ConstructorInput {
         name,

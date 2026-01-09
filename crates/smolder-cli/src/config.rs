@@ -36,7 +36,9 @@ impl RpcEndpoint {
 /// Etherscan config for a network
 #[derive(Debug, Clone, Deserialize)]
 pub struct EtherscanConfig {
+    /// API key for contract verification (parsed but not yet used)
     #[serde(default)]
+    #[allow(dead_code)]
     pub key: Option<String>,
     #[serde(default)]
     pub url: Option<String>,

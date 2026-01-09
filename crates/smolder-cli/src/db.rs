@@ -1,7 +1,7 @@
 use color_eyre::eyre::Result;
 use smolder_core::{
-    schema, CallHistory, CallHistoryView, Contract, DeploymentView, Network, NewCallHistory,
-    NewContract, NewDeployment, NewNetwork, NewWallet, Wallet,
+    schema, Contract, DeploymentView, Network, NewContract, NewDeployment, NewNetwork, NewWallet,
+    Wallet,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::str::FromStr;
@@ -65,6 +65,7 @@ impl Database {
     }
 
     /// Get a network by name
+    #[allow(dead_code)]
     pub async fn get_network(&self, name: &str) -> Result<Option<Network>> {
         let network = sqlx::query_as::<_, Network>("SELECT * FROM networks WHERE name = ?")
             .bind(name)
@@ -75,6 +76,7 @@ impl Database {
     }
 
     /// Get all networks
+    #[allow(dead_code)]
     pub async fn list_networks(&self) -> Result<Vec<Network>> {
         let networks = sqlx::query_as::<_, Network>("SELECT * FROM networks ORDER BY name")
             .fetch_all(&self.pool)
@@ -108,6 +110,7 @@ impl Database {
     }
 
     /// Get a contract by name
+    #[allow(dead_code)]
     pub async fn get_contract(&self, name: &str) -> Result<Option<Contract>> {
         let contract = sqlx::query_as::<_, Contract>(
             "SELECT * FROM contracts WHERE name = ? ORDER BY created_at DESC LIMIT 1",
@@ -354,131 +357,6 @@ impl Database {
             .await?;
 
         Ok(result.rows_affected() > 0)
-    }
-
-    // ---- Call history operations ----
-
-    /// Create a new call history entry
-    pub async fn create_call_history(&self, call: &NewCallHistory) -> Result<i64> {
-        let id = sqlx::query_scalar::<_, i64>(
-            r#"
-            INSERT INTO call_history (deployment_id, wallet_id, function_name, function_signature, input_params, call_type)
-            VALUES (?, ?, ?, ?, ?, ?)
-            RETURNING id
-            "#,
-        )
-        .bind(call.deployment_id)
-        .bind(call.wallet_id)
-        .bind(&call.function_name)
-        .bind(&call.function_signature)
-        .bind(&call.input_params)
-        .bind(&call.call_type)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(id)
-    }
-
-    /// Update call history with result (for read calls)
-    pub async fn update_call_history_result(&self, id: i64, result: &str) -> Result<()> {
-        sqlx::query("UPDATE call_history SET result = ?, status = 'success' WHERE id = ?")
-            .bind(result)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
-    /// Update call history with transaction result (for write calls)
-    pub async fn update_call_history_tx(
-        &self,
-        id: i64,
-        tx_hash: &str,
-        status: &str,
-        block_number: Option<i64>,
-        gas_used: Option<i64>,
-        gas_price: Option<&str>,
-        error_message: Option<&str>,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE call_history SET
-                tx_hash = ?,
-                status = ?,
-                block_number = ?,
-                gas_used = ?,
-                gas_price = ?,
-                error_message = ?,
-                confirmed_at = CASE WHEN ? IN ('success', 'failed', 'reverted') THEN CURRENT_TIMESTAMP ELSE NULL END
-            WHERE id = ?
-            "#,
-        )
-        .bind(tx_hash)
-        .bind(status)
-        .bind(block_number)
-        .bind(gas_used)
-        .bind(gas_price)
-        .bind(error_message)
-        .bind(status)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Get call history for a deployment
-    pub async fn get_deployment_call_history(
-        &self,
-        deployment_id: i64,
-    ) -> Result<Vec<CallHistoryView>> {
-        let history = sqlx::query_as::<_, CallHistoryView>(
-            r#"
-            SELECT
-                h.id,
-                h.deployment_id,
-                c.name as contract_name,
-                n.name as network_name,
-                d.address as contract_address,
-                w.name as wallet_name,
-                h.function_name,
-                h.function_signature,
-                h.input_params,
-                h.call_type,
-                h.result,
-                h.tx_hash,
-                h.block_number,
-                h.gas_used,
-                h.gas_price,
-                h.status,
-                h.error_message,
-                h.created_at,
-                h.confirmed_at
-            FROM call_history h
-            JOIN deployments d ON h.deployment_id = d.id
-            JOIN contracts c ON d.contract_id = c.id
-            JOIN networks n ON d.network_id = n.id
-            LEFT JOIN wallets w ON h.wallet_id = w.id
-            WHERE h.deployment_id = ?
-            ORDER BY h.created_at DESC
-            "#,
-        )
-        .bind(deployment_id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(history)
-    }
-
-    /// Get a single call history entry by id
-    pub async fn get_call_history(&self, id: i64) -> Result<Option<CallHistory>> {
-        let history = sqlx::query_as::<_, CallHistory>("SELECT * FROM call_history WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
-
-        Ok(history)
     }
 }
 
