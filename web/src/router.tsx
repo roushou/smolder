@@ -5,9 +5,10 @@ import {
 	Link,
 	Outlet,
 } from "@tanstack/react-router";
-import { Dashboard } from "./pages/dashboard";
-import { Deploy } from "./pages/deploy";
+import { Contracts } from "./pages/contracts";
 import { DeploymentDetail } from "./pages/deployment-details";
+import { Networks } from "./pages/networks";
+import { NotFound } from "./pages/not-found";
 import { Wallets } from "./pages/wallets";
 
 function RootLayout() {
@@ -50,13 +51,13 @@ function RootLayout() {
 								to="/"
 								className="text-sm text-text-muted transition-colors hover:text-text [&.active]:text-accent"
 							>
-								Deployments
+								Contracts
 							</Link>
 							<Link
-								to="/deploy"
+								to="/networks"
 								className="text-sm text-text-muted transition-colors hover:text-text [&.active]:text-accent"
 							>
-								Deploy
+								Networks
 							</Link>
 							<Link
 								to="/wallets"
@@ -87,13 +88,14 @@ function RootLayout() {
 // Root layout
 const rootRoute = createRootRoute({
 	component: RootLayout,
+	notFoundComponent: NotFound,
 });
 
 // Routes
 const indexRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
-	component: Dashboard,
+	component: Contracts,
 });
 
 const deploymentRoute = createRoute({
@@ -102,24 +104,24 @@ const deploymentRoute = createRoute({
 	component: DeploymentDetail,
 });
 
+const networksRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/networks",
+	component: Networks,
+});
+
 const walletsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/wallets",
 	component: Wallets,
 });
 
-const deployRoute = createRoute({
-	getParentRoute: () => rootRoute,
-	path: "/deploy",
-	component: Deploy,
-});
-
 // Build route tree
 const routeTree = rootRoute.addChildren([
 	indexRoute,
 	deploymentRoute,
+	networksRoute,
 	walletsRoute,
-	deployRoute,
 ]);
 
 // Create router

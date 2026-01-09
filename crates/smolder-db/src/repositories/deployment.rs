@@ -144,4 +144,18 @@ impl DeploymentRepository for Database {
         };
         DeploymentRepository::list(self, filter).await
     }
+
+    async fn list_versions(&self, contract: &str, network: &str) -> Result<Vec<DeploymentView>> {
+        let query = format!(
+            "{} WHERE c.name = ? AND n.name = ? ORDER BY d.version DESC",
+            DEPLOYMENT_VIEW_SELECT
+        );
+
+        let deployments = sqlx::query_as::<_, DeploymentView>(&query)
+            .bind(contract)
+            .bind(network)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(deployments)
+    }
 }

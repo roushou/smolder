@@ -11,10 +11,16 @@ use crate::server::error::ApiError;
 use crate::server::AppState;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/deployments", get(list)).route(
-        "/deployments/{contract}/{network}",
-        get(get_by_contract_and_network),
-    )
+    Router::new()
+        .route("/deployments", get(list))
+        .route(
+            "/deployments/{contract}/{network}",
+            get(get_by_contract_and_network),
+        )
+        .route(
+            "/deployments/{contract}/{network}/versions",
+            get(list_versions),
+        )
 }
 
 #[derive(Deserialize, Default)]
@@ -55,4 +61,12 @@ async fn get_by_contract_and_network(
         .ok_or_else(not_found)?;
 
     Ok(Json(view))
+}
+
+async fn list_versions(
+    State(state): State<AppState>,
+    Path((contract, network)): Path<(String, String)>,
+) -> Result<Json<Vec<DeploymentView>>, ApiError> {
+    let versions = DeploymentRepository::list_versions(state.db(), &contract, &network).await?;
+    Ok(Json(versions))
 }

@@ -5,17 +5,21 @@ import type {
 	CallHistory,
 	Deployment,
 	FunctionsResponse,
+	Network,
 	Wallet,
 } from "../api/types";
 import { FunctionForm } from "../components/function-form";
+import { formatDateTime, truncateAddress } from "../lib/format";
 
-type Tab = "details" | "interact" | "history";
+type Tab = "details" | "interact" | "history" | "versions";
 type InteractTab = "read" | "write";
 
 export function DeploymentDetail() {
 	const params = useParams({ from: "/deployment/$contract/$network" });
 	const { contract, network } = params;
 	const [deployment, setDeployment] = useState<Deployment | null>(null);
+	const [networkData, setNetworkData] = useState<Network | null>(null);
+	const [versions, setVersions] = useState<Deployment[]>([]);
 	const [functions, setFunctions] = useState<FunctionsResponse | null>(null);
 	const [wallets, setWallets] = useState<Wallet[]>([]);
 	const [history, setHistory] = useState<CallHistory[]>([]);
@@ -39,14 +43,19 @@ export function DeploymentDetail() {
 				const deploymentData = await api.deployments.get(contract, network);
 				setDeployment(deploymentData);
 
-				// Load functions and wallets in parallel
-				const [functionsData, walletsData] = await Promise.all([
-					api.deployments.getFunctions(deploymentData.id),
-					api.wallets.list(),
-				]);
+				// Load functions, wallets, network, and versions in parallel
+				const [functionsData, walletsData, networkInfo, versionsData] =
+					await Promise.all([
+						api.deployments.getFunctions(deploymentData.id),
+						api.wallets.list(),
+						api.networks.get(network).catch(() => null),
+						api.deployments.getVersions(contract, network),
+					]);
 
 				setFunctions(functionsData);
 				setWallets(walletsData);
+				setNetworkData(networkInfo);
+				setVersions(versionsData);
 
 				// Load history
 				await loadHistory(deploymentData.id);
@@ -189,10 +198,23 @@ export function DeploymentDetail() {
 						</span>
 					)}
 				</TabButton>
+				<TabButton
+					active={activeTab === "versions"}
+					onClick={() => setActiveTab("versions")}
+				>
+					Versions
+					{versions.length > 1 && (
+						<span className="ml-2 rounded-full bg-bg-muted px-2 py-0.5 text-xs">
+							{versions.length}
+						</span>
+					)}
+				</TabButton>
 			</div>
 
 			{/* Tab content */}
-			{activeTab === "details" && <DetailsTab deployment={deployment} />}
+			{activeTab === "details" && (
+				<DetailsTab deployment={deployment} network={networkData} />
+			)}
 
 			{activeTab === "interact" && functions && (
 				<InteractTab
@@ -206,6 +228,14 @@ export function DeploymentDetail() {
 			)}
 
 			{activeTab === "history" && <HistoryTab history={history} />}
+
+			{activeTab === "versions" && (
+				<VersionsTab
+					versions={versions}
+					currentVersion={deployment.version}
+					network={networkData}
+				/>
+			)}
 		</div>
 	);
 }
@@ -234,7 +264,24 @@ function TabButton({
 	);
 }
 
-function DetailsTab({ deployment }: { deployment: Deployment }) {
+function DetailsTab({
+	deployment,
+	network,
+}: {
+	deployment: Deployment;
+	network: Network | null;
+}) {
+	const explorerUrl = network?.explorer_url;
+
+	const getAddressUrl = () =>
+		explorerUrl ? `${explorerUrl}/address/${deployment.address}` : null;
+	const getTxUrl = () =>
+		explorerUrl ? `${explorerUrl}/tx/${deployment.tx_hash}` : null;
+	const getBlockUrl = () =>
+		explorerUrl && deployment.block_number
+			? `${explorerUrl}/block/${deployment.block_number}`
+			: null;
+
 	return (
 		<div className="space-y-6">
 			{/* Primary info */}
@@ -243,23 +290,36 @@ function DetailsTab({ deployment }: { deployment: Deployment }) {
 					<h2 className="font-medium text-sm text-text">Contract Details</h2>
 				</div>
 				<div className="divide-y divide-border">
-					<DetailRow label="Address" value={deployment.address} mono copyable />
+					<DetailRow
+						label="Address"
+						value={deployment.address}
+						mono
+						copyable
+						explorerUrl={getAddressUrl()}
+					/>
 					<DetailRow
 						label="Deployer"
 						value={deployment.deployer}
 						mono
 						copyable
+						explorerUrl={
+							explorerUrl
+								? `${explorerUrl}/address/${deployment.deployer}`
+								: null
+						}
 					/>
 					<DetailRow
 						label="Transaction Hash"
 						value={deployment.tx_hash}
 						mono
 						copyable
+						explorerUrl={getTxUrl()}
 					/>
 					<DetailRow
 						label="Block Number"
 						value={deployment.block_number?.toLocaleString() ?? "N/A"}
 						mono={!!deployment.block_number}
+						explorerUrl={getBlockUrl()}
 					/>
 					<DetailRow
 						label="Deployed At"
@@ -280,6 +340,96 @@ function DetailsTab({ deployment }: { deployment: Deployment }) {
 					</pre>
 				</div>
 			</section>
+		</div>
+	);
+}
+
+function VersionsTab({
+	versions,
+	currentVersion,
+	network,
+}: {
+	versions: Deployment[];
+	currentVersion: number;
+	network: Network | null;
+}) {
+	const explorerUrl = network?.explorer_url;
+
+	if (versions.length === 0) {
+		return (
+			<div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
+				<p className="text-sm text-text-muted">No version history available</p>
+			</div>
+		);
+	}
+
+	return (
+		<div className="overflow-hidden rounded-xl border border-border bg-bg-elevated">
+			<div className="divide-y divide-border">
+				{versions.map((version) => (
+					<div
+						key={version.id}
+						className={`flex items-center justify-between px-5 py-4 ${
+							version.version === currentVersion ? "bg-accent/5" : ""
+						}`}
+					>
+						<div className="flex items-center gap-4">
+							<span
+								className={`rounded-md px-2 py-1 font-medium text-sm ${
+									version.version === currentVersion
+										? "bg-accent text-bg-base"
+										: "bg-bg-muted text-text-muted"
+								}`}
+							>
+								v{version.version}
+							</span>
+							<div>
+								<div className="flex items-center gap-2">
+									<span className="font-mono text-sm text-text-secondary">
+										{truncateAddress(version.address)}
+									</span>
+									{version.is_current && (
+										<span className="rounded bg-success/10 px-1.5 py-0.5 text-success text-xs">
+											Current
+										</span>
+									)}
+								</div>
+								<p className="text-text-faint text-xs">
+									{formatDateTime(version.deployed_at)}
+								</p>
+							</div>
+						</div>
+						<div className="flex items-center gap-2">
+							{explorerUrl && (
+								<a
+									href={`${explorerUrl}/address/${version.address}`}
+									target="_blank"
+									rel="noopener noreferrer"
+									className="rounded-lg border border-border bg-bg-surface p-2 text-text-muted transition-colors hover:border-accent hover:text-accent"
+									title="View on explorer"
+								>
+									<span className="sr-only">View on explorer</span>
+									<svg
+										aria-hidden="true"
+										className="h-4 w-4"
+										fill="none"
+										viewBox="0 0 24 24"
+										stroke="currentColor"
+									>
+										<path
+											strokeLinecap="round"
+											strokeLinejoin="round"
+											strokeWidth={1.5}
+											d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+										/>
+									</svg>
+								</a>
+							)}
+							<CopyButton text={version.address} label="Copy" />
+						</div>
+					</div>
+				))}
+			</div>
 		</div>
 	);
 }
@@ -556,11 +706,13 @@ function DetailRow({
 	value,
 	mono,
 	copyable,
+	explorerUrl,
 }: {
 	label: string;
 	value: string;
 	mono?: boolean;
 	copyable?: boolean;
+	explorerUrl?: string | null;
 }) {
 	const [copied, setCopied] = useState(false);
 
@@ -579,6 +731,31 @@ function DetailRow({
 				>
 					{value}
 				</span>
+				{explorerUrl && (
+					<a
+						href={explorerUrl}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="shrink-0 rounded-md p-1.5 text-text-faint transition-colors hover:bg-bg-muted hover:text-accent"
+						title="View on explorer"
+					>
+						<span className="sr-only">View on explorer</span>
+						<svg
+							aria-hidden="true"
+							className="h-4 w-4"
+							fill="none"
+							viewBox="0 0 24 24"
+							stroke="currentColor"
+						>
+							<path
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								strokeWidth={1.5}
+								d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+							/>
+						</svg>
+					</a>
+				)}
 				{copyable && (
 					<button
 						type="button"
@@ -694,15 +871,4 @@ function formatJson(json: string): string {
 	} catch {
 		return json;
 	}
-}
-
-function formatDateTime(dateString: string): string {
-	const date = new Date(dateString);
-	return date.toLocaleDateString("en-US", {
-		year: "numeric",
-		month: "short",
-		day: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-	});
 }

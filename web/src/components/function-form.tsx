@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api } from "../api/client";
 import type { FunctionInfo, Wallet } from "../api/types";
+import { truncateAddress } from "../lib/format";
 import { ParamInput } from "./param-input";
 
 interface FunctionFormProps {
@@ -345,9 +346,4 @@ export function FunctionForm({
 			)}
 		</div>
 	);
-}
-
-function truncateAddress(address: string): string {
-	if (address.length <= 13) return address;
-	return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }

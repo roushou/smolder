@@ -70,6 +70,8 @@ export const api = {
 		},
 		get: (contract: string, network: string): Promise<Deployment> =>
 			fetchJson(`${API_BASE}/deployments/${contract}/${network}`),
+		getVersions: (contract: string, network: string): Promise<Deployment[]> =>
+			fetchJson(`${API_BASE}/deployments/${contract}/${network}/versions`),
 		getFunctions: (id: number): Promise<FunctionsResponse> =>
 			fetchJson(`${API_BASE}/deployments/${id}/functions`),
 		call: (id: number, request: CallRequest): Promise<CallResponse> =>

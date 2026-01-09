@@ -120,6 +120,9 @@ pub trait DeploymentRepository: Send + Sync {
 
     /// Get all deployments for export (regardless of current status)
     async fn list_for_export(&self, network: Option<&str>) -> Result<Vec<DeploymentView>>;
+
+    /// Get all versions of a contract deployment on a network (version history)
+    async fn list_versions(&self, contract: &str, network: &str) -> Result<Vec<DeploymentView>>;
 }
 
 /// Repository for wallet operations

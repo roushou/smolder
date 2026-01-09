@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { Wallet } from "../api/types";
+import { CardSkeleton, EmptyState, ErrorState } from "../components/ui";
+import { formatDate } from "../lib/format";
 
 export function Wallets() {
 	const [wallets, setWallets] = useState<Wallet[]>([]);
@@ -37,28 +39,10 @@ export function Wallets() {
 
 	if (error) {
 		return (
-			<div className="mx-auto max-w-4xl px-6 py-20">
-				<div className="flex flex-col items-center justify-center text-center">
-					<div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-error/10">
-						<svg
-							aria-hidden="true"
-							className="h-6 w-6 text-error"
-							fill="none"
-							viewBox="0 0 24 24"
-							stroke="currentColor"
-						>
-							<path
-								strokeLinecap="round"
-								strokeLinejoin="round"
-								strokeWidth={1.5}
-								d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-							/>
-						</svg>
-					</div>
-					<h2 className="mb-2 font-medium text-lg text-text">
-						Unable to load wallets
-					</h2>
-					<p className="mb-6 max-w-sm text-sm text-text-secondary">{error}</p>
+			<ErrorState
+				title="Unable to load wallets"
+				message={error}
+				hint={
 					<button
 						type="button"
 						onClick={() => {
@@ -69,8 +53,8 @@ export function Wallets() {
 					>
 						Retry
 					</button>
-				</div>
-			</div>
+				}
+			/>
 		);
 	}
 
@@ -235,30 +219,13 @@ function WalletsList({
 	onRemove: () => void;
 }) {
 	if (loading) {
-		return (
-			<div className="space-y-3">
-				{["skeleton-1", "skeleton-2"].map((key) => (
-					<div
-						key={key}
-						className="animate-pulse rounded-xl border border-border bg-bg-elevated p-5"
-					>
-						<div className="flex items-center gap-4">
-							<div className="h-10 w-10 rounded-lg bg-bg-muted" />
-							<div className="flex-1">
-								<div className="mb-2 h-4 w-24 rounded bg-bg-muted" />
-								<div className="h-3 w-48 rounded bg-bg-muted" />
-							</div>
-						</div>
-					</div>
-				))}
-			</div>
-		);
+		return <CardSkeleton count={2} />;
 	}
 
 	if (wallets.length === 0) {
 		return (
-			<div className="rounded-xl border border-border bg-bg-elevated p-12 text-center">
-				<div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-bg-muted">
+			<EmptyState
+				icon={
 					<svg
 						aria-hidden="true"
 						className="h-6 w-6 text-text-muted"
@@ -273,12 +240,10 @@ function WalletsList({
 							d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"
 						/>
 					</svg>
-				</div>
-				<h3 className="mb-2 font-medium text-lg text-text">No wallets yet</h3>
-				<p className="text-sm text-text-secondary">
-					Add a wallet to start signing transactions
-				</p>
-			</div>
+				}
+				title="No wallets yet"
+				description="Add a wallet to start signing transactions"
+			/>
 		);
 	}
 
@@ -407,13 +372,4 @@ function WalletCard({
 			</div>
 		</div>
 	);
-}
-
-function formatDate(dateString: string): string {
-	const date = new Date(dateString);
-	return date.toLocaleDateString("en-US", {
-		year: "numeric",
-		month: "short",
-		day: "numeric",
-	});
 }
