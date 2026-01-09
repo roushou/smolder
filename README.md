@@ -66,6 +66,7 @@ smolder serve
 
 - [`smolder-cli`](./crates/smolder-cli) - Command-line interface
 - [`smolder-core`](./crates/smolder-core) - Core library with data models and database schema
+- [`smolder-server`](./crates/smolder-server) - Web server with embedded React dashboard
 
 ## License
 
