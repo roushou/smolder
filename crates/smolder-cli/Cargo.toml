@@ -31,4 +31,4 @@ tower-http = { version = "0.6", features = ["cors"] }
 rust-embed = "8"
 mime_guess = "2"
 hex = "0.4"
-reqwest = "0.12"
+reqwest = { version = "0.13.1", default-features = false, features = ["json", "rustls"] }
