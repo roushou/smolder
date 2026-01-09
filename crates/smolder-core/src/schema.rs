@@ -45,11 +45,12 @@ CREATE TABLE IF NOT EXISTS deployments (
 CREATE INDEX IF NOT EXISTS idx_deployments_contract_network ON deployments(contract_id, network_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_current ON deployments(is_current) WHERE is_current = TRUE;
 
--- Wallets (metadata only - private keys stored in OS keychain)
+-- Wallets with encrypted private keys
 CREATE TABLE IF NOT EXISTS wallets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
     address TEXT UNIQUE NOT NULL,
+    encrypted_key BLOB NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

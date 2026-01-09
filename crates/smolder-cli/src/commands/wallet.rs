@@ -2,7 +2,7 @@ use alloy::signers::local::PrivateKeySigner;
 use color_eyre::eyre::{eyre, Result};
 use console::style;
 use dialoguer::{Confirm, Password};
-use smolder_core::{keyring, NewWallet};
+use smolder_core::{encrypt_private_key, NewWallet};
 
 use crate::db::Database;
 
@@ -50,13 +50,14 @@ pub async fn add(name: &str) -> Result<()> {
         ));
     }
 
-    // Store private key in keyring
-    keyring::store_private_key(name, &private_key)?;
+    // Encrypt and store wallet with private key in database
+    let encrypted_key = encrypt_private_key(&private_key)
+        .map_err(|e| eyre!("Failed to encrypt private key: {}", e))?;
 
-    // Store wallet metadata in database
     db.create_wallet(&NewWallet {
         name: name.to_string(),
         address: address.clone(),
+        encrypted_key,
     })
     .await?;
 
@@ -90,16 +91,9 @@ pub async fn list() -> Result<()> {
     println!();
 
     for wallet in wallets {
-        let has_key = keyring::has_private_key(&wallet.name);
-        let key_status = if has_key {
-            style("*").green()
-        } else {
-            style("!").yellow()
-        };
-
         println!(
             "   {} {} {}",
-            key_status,
+            style("*").green(),
             style(&wallet.name).cyan().bold(),
             style(&wallet.address).yellow()
         );
@@ -141,12 +135,7 @@ pub async fn remove(name: &str, force: bool) -> Result<()> {
         }
     }
 
-    // Delete private key from keyring
-    if keyring::has_private_key(name) {
-        keyring::delete_private_key(name)?;
-    }
-
-    // Delete wallet from database
+    // Delete wallet from database (encrypted key is deleted with the row)
     db.delete_wallet(name).await?;
 
     println!();

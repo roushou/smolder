@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use smolder_core::{keyring, Wallet};
+use smolder_core::{encrypt_private_key, Wallet};
 
 use crate::server::AppState;
 
@@ -18,10 +18,12 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn list(State(state): State<AppState>) -> Result<Json<Vec<Wallet>>, (StatusCode, String)> {
-    let wallets = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets ORDER BY name")
-        .fetch_all(state.pool.as_ref())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let wallets = sqlx::query_as::<_, Wallet>(
+        "SELECT id, name, address, created_at FROM wallets ORDER BY name",
+    )
+    .fetch_all(state.pool.as_ref())
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(wallets))
 }
@@ -30,11 +32,13 @@ async fn get_by_name(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Wallet>, (StatusCode, String)> {
-    let wallet = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets WHERE name = ?")
-        .bind(&name)
-        .fetch_optional(state.pool.as_ref())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let wallet = sqlx::query_as::<_, Wallet>(
+        "SELECT id, name, address, created_at FROM wallets WHERE name = ?",
+    )
+    .bind(&name)
+    .fetch_optional(state.pool.as_ref())
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match wallet {
         Some(w) => Ok(Json(w)),
@@ -73,11 +77,13 @@ async fn create(
     let address = format!("{:?}", signer.address());
 
     // Check if wallet name already exists
-    let existing = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets WHERE name = ?")
-        .bind(&payload.name)
-        .fetch_optional(state.pool.as_ref())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let existing = sqlx::query_as::<_, Wallet>(
+        "SELECT id, name, address, created_at FROM wallets WHERE name = ?",
+    )
+    .bind(&payload.name)
+    .fetch_optional(state.pool.as_ref())
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if existing.is_some() {
         return Err((
@@ -87,11 +93,13 @@ async fn create(
     }
 
     // Check if address already exists
-    let existing_addr = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets WHERE address = ?")
-        .bind(&address)
-        .fetch_optional(state.pool.as_ref())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let existing_addr = sqlx::query_as::<_, Wallet>(
+        "SELECT id, name, address, created_at FROM wallets WHERE address = ?",
+    )
+    .bind(&address)
+    .fetch_optional(state.pool.as_ref())
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if existing_addr.is_some() {
         return Err((
@@ -100,23 +108,20 @@ async fn create(
         ));
     }
 
-    // Store private key in keyring
-    keyring::store_private_key(&payload.name, &private_key)
+    // Encrypt private key
+    let encrypted_key = encrypt_private_key(&private_key)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Store wallet in database
+    // Store wallet with encrypted key in database
     let wallet = sqlx::query_as::<_, Wallet>(
-        "INSERT INTO wallets (name, address) VALUES (?, ?) RETURNING *",
+        "INSERT INTO wallets (name, address, encrypted_key) VALUES (?, ?, ?) RETURNING id, name, address, created_at",
     )
     .bind(&payload.name)
     .bind(&address)
+    .bind(&encrypted_key)
     .fetch_one(state.pool.as_ref())
     .await
-    .map_err(|e| {
-        // Clean up keyring if database insert fails
-        let _ = keyring::delete_private_key(&payload.name);
-        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-    })?;
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(wallet))
 }
@@ -126,11 +131,13 @@ async fn remove(
     Path(name): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     // Check if wallet exists
-    let wallet = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets WHERE name = ?")
-        .bind(&name)
-        .fetch_optional(state.pool.as_ref())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let wallet = sqlx::query_as::<_, Wallet>(
+        "SELECT id, name, address, created_at FROM wallets WHERE name = ?",
+    )
+    .bind(&name)
+    .fetch_optional(state.pool.as_ref())
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if wallet.is_none() {
         return Err((
@@ -139,13 +146,7 @@ async fn remove(
         ));
     }
 
-    // Delete from keyring
-    if keyring::has_private_key(&name) {
-        keyring::delete_private_key(&name)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    }
-
-    // Delete from database
+    // Delete from database (encrypted key is deleted with the row)
     sqlx::query("DELETE FROM wallets WHERE name = ?")
         .bind(&name)
         .execute(state.pool.as_ref())

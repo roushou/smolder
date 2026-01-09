@@ -7,7 +7,7 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
-use smolder_core::{keyring, Network, Wallet};
+use smolder_core::{decrypt_private_key, Network, WalletWithKey};
 
 use crate::forge;
 use crate::server::AppState;
@@ -67,8 +67,8 @@ async fn deploy_contract(
     // Get network
     let network = get_network_by_name(&state, &payload.network_name).await?;
 
-    // Get wallet
-    let wallet = get_wallet_by_name(&state, &payload.wallet_name).await?;
+    // Get wallet with encrypted key (validates wallet exists)
+    let wallet = get_wallet_with_key(&state, &payload.wallet_name).await?;
 
     // Encode constructor args if any
     let encoded_args = if let Some(constructor) = &artifact.constructor {
@@ -119,8 +119,8 @@ async fn deploy_contract(
         _ => None,
     };
 
-    // Get private key
-    let private_key = keyring::get_private_key(&payload.wallet_name)
+    // Decrypt private key from wallet
+    let private_key = decrypt_private_key(&wallet.encrypted_key)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Combine bytecode and encoded args
@@ -188,8 +188,11 @@ async fn get_network_by_name(
     ))
 }
 
-async fn get_wallet_by_name(state: &AppState, name: &str) -> Result<Wallet, (StatusCode, String)> {
-    let wallet = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets WHERE name = ?")
+async fn get_wallet_with_key(
+    state: &AppState,
+    name: &str,
+) -> Result<WalletWithKey, (StatusCode, String)> {
+    let wallet = sqlx::query_as::<_, WalletWithKey>("SELECT * FROM wallets WHERE name = ?")
         .bind(name)
         .fetch_optional(state.pool.as_ref())
         .await

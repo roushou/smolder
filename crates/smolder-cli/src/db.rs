@@ -1,7 +1,7 @@
 use color_eyre::eyre::Result;
 use smolder_core::{
     schema, Contract, DeploymentView, Network, NewContract, NewDeployment, NewNetwork, NewWallet,
-    Wallet,
+    Wallet, WalletWithKey,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::str::FromStr;
@@ -307,22 +307,36 @@ impl Database {
 
     // ---- Wallet operations ----
 
-    /// Create a new wallet
+    /// Create a new wallet with encrypted private key
     pub async fn create_wallet(&self, wallet: &NewWallet) -> Result<i64> {
         let id = sqlx::query_scalar::<_, i64>(
-            "INSERT INTO wallets (name, address) VALUES (?, ?) RETURNING id",
+            "INSERT INTO wallets (name, address, encrypted_key) VALUES (?, ?, ?) RETURNING id",
         )
         .bind(&wallet.name)
         .bind(&wallet.address)
+        .bind(&wallet.encrypted_key)
         .fetch_one(&self.pool)
         .await?;
 
         Ok(id)
     }
 
-    /// Get a wallet by name
+    /// Get a wallet by name (without private key)
     pub async fn get_wallet(&self, name: &str) -> Result<Option<Wallet>> {
-        let wallet = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets WHERE name = ?")
+        let wallet = sqlx::query_as::<_, Wallet>(
+            "SELECT id, name, address, created_at FROM wallets WHERE name = ?",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(wallet)
+    }
+
+    /// Get a wallet with encrypted key by name
+    #[allow(dead_code)]
+    pub async fn get_wallet_with_key(&self, name: &str) -> Result<Option<WalletWithKey>> {
+        let wallet = sqlx::query_as::<_, WalletWithKey>("SELECT * FROM wallets WHERE name = ?")
             .bind(name)
             .fetch_optional(&self.pool)
             .await?;
@@ -330,21 +344,25 @@ impl Database {
         Ok(wallet)
     }
 
-    /// Get a wallet by address
+    /// Get a wallet by address (without private key)
     pub async fn get_wallet_by_address(&self, address: &str) -> Result<Option<Wallet>> {
-        let wallet = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets WHERE address = ?")
-            .bind(address)
-            .fetch_optional(&self.pool)
-            .await?;
+        let wallet = sqlx::query_as::<_, Wallet>(
+            "SELECT id, name, address, created_at FROM wallets WHERE address = ?",
+        )
+        .bind(address)
+        .fetch_optional(&self.pool)
+        .await?;
 
         Ok(wallet)
     }
 
-    /// List all wallets
+    /// List all wallets (without private keys)
     pub async fn list_wallets(&self) -> Result<Vec<Wallet>> {
-        let wallets = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets ORDER BY name")
-            .fetch_all(&self.pool)
-            .await?;
+        let wallets = sqlx::query_as::<_, Wallet>(
+            "SELECT id, name, address, created_at FROM wallets ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok(wallets)
     }

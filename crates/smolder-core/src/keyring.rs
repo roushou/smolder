@@ -1,91 +1,105 @@
-//! Secure key storage using OS keychain
+//! Secure key storage using AES-256-GCM encryption
 //!
-//! Uses the `keyring` crate for cross-platform secret storage:
-//! - macOS: Keychain Services
-//! - Windows: Credential Manager
-//! - Linux: Secret Service (GNOME Keyring, KWallet)
+//! Private keys are encrypted with an app-derived key before storage in SQLite.
+//! This provides obfuscation rather than true security - the encryption key
+//! is embedded in the binary. For higher security, consider password-based
+//! key derivation.
+
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+use rand::Rng;
 
 use crate::error::Error;
 
-/// Service name for keyring entries
-const KEYRING_SERVICE: &str = "smolder";
+/// App-derived encryption key (32 bytes for AES-256)
+/// In production, this should ideally be derived from user input
+const APP_KEY: &[u8; 32] = b"smolder-wallet-encrypt-key-0032!";
 
-/// Store a private key securely in the OS keychain
-pub fn store_private_key(wallet_name: &str, private_key: &str) -> Result<(), Error> {
-    let key = format!("wallet:{}", wallet_name);
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key)
-        .map_err(|e| Error::Keyring(format!("Failed to create keyring entry: {}", e)))?;
+/// Nonce size for AES-GCM (96 bits / 12 bytes)
+const NONCE_SIZE: usize = 12;
 
-    entry
-        .set_password(private_key)
-        .map_err(|e| Error::Keyring(format!("Failed to store key: {}", e)))?;
+/// Encrypt a private key for storage
+///
+/// Returns the encrypted data with the nonce prepended (nonce || ciphertext)
+pub fn encrypt_private_key(private_key: &str) -> Result<Vec<u8>, Error> {
+    let cipher = Aes256Gcm::new(APP_KEY.into());
 
-    Ok(())
+    // Generate random nonce
+    let mut nonce_bytes = [0u8; NONCE_SIZE];
+    rand::thread_rng().fill(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    // Encrypt
+    let ciphertext = cipher
+        .encrypt(nonce, private_key.as_bytes())
+        .map_err(|e| Error::Keyring(format!("Encryption failed: {}", e)))?;
+
+    // Prepend nonce to ciphertext
+    let mut result = nonce_bytes.to_vec();
+    result.extend(ciphertext);
+
+    Ok(result)
 }
 
-/// Retrieve a private key from the OS keychain
-pub fn get_private_key(wallet_name: &str) -> Result<String, Error> {
-    let key = format!("wallet:{}", wallet_name);
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key)
-        .map_err(|e| Error::Keyring(format!("Failed to create keyring entry: {}", e)))?;
+/// Decrypt a private key from storage
+///
+/// Expects data in format: nonce (12 bytes) || ciphertext
+pub fn decrypt_private_key(encrypted_data: &[u8]) -> Result<String, Error> {
+    if encrypted_data.len() < NONCE_SIZE {
+        return Err(Error::Keyring("Invalid encrypted data: too short".into()));
+    }
 
-    entry
-        .get_password()
-        .map_err(|e| Error::Keyring(format!("Failed to retrieve key: {}", e)))
-}
+    let cipher = Aes256Gcm::new(APP_KEY.into());
 
-/// Delete a private key from the OS keychain
-pub fn delete_private_key(wallet_name: &str) -> Result<(), Error> {
-    let key = format!("wallet:{}", wallet_name);
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key)
-        .map_err(|e| Error::Keyring(format!("Failed to create keyring entry: {}", e)))?;
+    // Split nonce and ciphertext
+    let (nonce_bytes, ciphertext) = encrypted_data.split_at(NONCE_SIZE);
+    let nonce = Nonce::from_slice(nonce_bytes);
 
-    entry
-        .delete_credential()
-        .map_err(|e| Error::Keyring(format!("Failed to delete key: {}", e)))?;
+    // Decrypt
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| Error::Keyring(format!("Decryption failed: {}", e)))?;
 
-    Ok(())
-}
-
-/// Check if a private key exists in the OS keychain
-pub fn has_private_key(wallet_name: &str) -> bool {
-    get_private_key(wallet_name).is_ok()
+    String::from_utf8(plaintext).map_err(|e| Error::Keyring(format!("Invalid UTF-8: {}", e)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Note: These tests require a working keyring backend
-    // They may fail in CI environments without proper setup
-
     #[test]
-    #[ignore = "Requires OS keyring backend"]
-    fn test_store_and_retrieve_key() {
-        let wallet_name = "test_wallet_smolder";
+    fn test_encrypt_decrypt_roundtrip() {
         let private_key = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
 
-        // Store
-        store_private_key(wallet_name, private_key).unwrap();
+        let encrypted = encrypt_private_key(private_key).unwrap();
+        let decrypted = decrypt_private_key(&encrypted).unwrap();
 
-        // Retrieve
-        let retrieved = get_private_key(wallet_name).unwrap();
-        assert_eq!(retrieved, private_key);
-
-        // Cleanup
-        delete_private_key(wallet_name).unwrap();
+        assert_eq!(decrypted, private_key);
     }
 
     #[test]
-    #[ignore = "Requires OS keyring backend"]
-    fn test_delete_key() {
-        let wallet_name = "test_wallet_delete_smolder";
+    fn test_different_nonces() {
         let private_key = "0xabcdef";
 
-        store_private_key(wallet_name, private_key).unwrap();
-        assert!(has_private_key(wallet_name));
+        let encrypted1 = encrypt_private_key(private_key).unwrap();
+        let encrypted2 = encrypt_private_key(private_key).unwrap();
 
-        delete_private_key(wallet_name).unwrap();
-        assert!(!has_private_key(wallet_name));
+        // Same plaintext should produce different ciphertext due to random nonce
+        assert_ne!(encrypted1, encrypted2);
+
+        // But both should decrypt correctly
+        assert_eq!(decrypt_private_key(&encrypted1).unwrap(), private_key);
+        assert_eq!(decrypt_private_key(&encrypted2).unwrap(), private_key);
+    }
+
+    #[test]
+    fn test_decrypt_invalid_data() {
+        // Too short
+        assert!(decrypt_private_key(&[0u8; 5]).is_err());
+
+        // Invalid ciphertext
+        assert!(decrypt_private_key(&[0u8; 20]).is_err());
     }
 }

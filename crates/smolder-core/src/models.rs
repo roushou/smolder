@@ -86,7 +86,7 @@ pub struct NewDeployment {
     pub constructor_args: Option<String>,
 }
 
-/// Wallet metadata (private key stored in OS keychain)
+/// Wallet metadata (for listing without key)
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Wallet {
     pub id: i64,
@@ -95,11 +95,22 @@ pub struct Wallet {
     pub created_at: String,
 }
 
+/// Wallet with encrypted private key (for internal use)
+#[derive(Debug, Clone, FromRow)]
+pub struct WalletWithKey {
+    pub id: i64,
+    pub name: String,
+    pub address: String,
+    pub encrypted_key: Vec<u8>,
+    pub created_at: String,
+}
+
 /// Input for creating a new wallet
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewWallet {
     pub name: String,
     pub address: String,
+    pub encrypted_key: Vec<u8>,
 }
 
 /// Call history entry

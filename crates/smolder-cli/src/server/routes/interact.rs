@@ -12,7 +12,9 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use smolder_core::{abi, keyring, CallHistoryView, DeploymentView, Network, Wallet};
+use smolder_core::{
+    abi, decrypt_private_key, CallHistoryView, DeploymentView, Network, WalletWithKey,
+};
 
 use crate::server::AppState;
 
@@ -181,7 +183,7 @@ async fn execute_send(
     )
     .await?;
 
-    let private_key = keyring::get_private_key(&payload.wallet_name)
+    let private_key = decrypt_private_key(&wallet.encrypted_key)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Execute transaction
@@ -319,8 +321,11 @@ async fn get_network_by_name(
     ))
 }
 
-async fn get_wallet_by_name(state: &AppState, name: &str) -> Result<Wallet, (StatusCode, String)> {
-    let wallet = sqlx::query_as::<_, Wallet>("SELECT * FROM wallets WHERE name = ?")
+async fn get_wallet_by_name(
+    state: &AppState,
+    name: &str,
+) -> Result<WalletWithKey, (StatusCode, String)> {
+    let wallet = sqlx::query_as::<_, WalletWithKey>("SELECT * FROM wallets WHERE name = ?")
         .bind(name)
         .fetch_optional(state.pool.as_ref())
         .await
