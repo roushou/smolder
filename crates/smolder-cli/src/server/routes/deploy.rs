@@ -1,6 +1,6 @@
 use alloy::dyn_abi::{DynSolType, DynSolValue};
 use alloy::hex;
-use alloy::network::EthereumWallet;
+use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::primitives::{keccak256, Address, Bytes, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
@@ -340,8 +340,8 @@ async fn execute_deploy(
         .map_err(|e| format!("Invalid RPC URL: {}", e))?;
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(url);
 
-    // CREATE transaction - no 'to' address
-    let mut tx = TransactionRequest::default().input(data.into());
+    // CREATE transaction - use with_deploy_code to properly mark as deployment
+    let mut tx = TransactionRequest::default().with_deploy_code(data);
 
     if let Some(v) = value {
         tx = tx.value(v);
