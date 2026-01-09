@@ -1,6 +1,5 @@
 mod commands;
 mod config;
-mod db;
 mod forge;
 mod rpc;
 mod server;

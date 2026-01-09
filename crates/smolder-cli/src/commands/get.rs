@@ -3,7 +3,7 @@
 use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 
-use crate::db::Database;
+use smolder_db::Database;
 
 /// Get the address of a deployed contract
 #[derive(Args)]

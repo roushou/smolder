@@ -4,8 +4,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use smolder_core::repository::ContractRepository;
-use smolder_core::Contract;
+use smolder_db::{Contract, ContractRepository};
 
 use crate::server::AppState;
 

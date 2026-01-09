@@ -1,6 +1,11 @@
+//! SQLite database schema
+//!
+//! This module contains the SQL DDL statements for creating the database schema
+//! and the function to initialize it.
+
 use sqlx::SqlitePool;
 
-use crate::error::Error;
+use smolder_core::Error;
 
 /// SQL schema for initializing the database
 pub const SCHEMA: &str = r#"

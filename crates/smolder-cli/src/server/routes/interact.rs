@@ -13,13 +13,11 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use smolder_core::repository::{
-    CallHistoryFilter, CallHistoryRepository, DeploymentRepository, NetworkRepository,
-    WalletRepository,
-};
-use smolder_core::{
-    abi, decrypt_private_key, CallHistoryUpdate, CallHistoryView, DeploymentId, DeploymentView,
-    Network, NewCallHistory, WalletWithKey,
+use smolder_core::{abi, decrypt_private_key, DeploymentId};
+use smolder_db::{
+    CallHistoryFilter, CallHistoryRepository, CallHistoryUpdate, CallHistoryView,
+    DeploymentRepository, DeploymentView, Network, NetworkRepository, NewCallHistory,
+    WalletRepository, WalletWithKey,
 };
 
 use crate::server::AppState;

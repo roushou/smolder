@@ -5,8 +5,8 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use smolder_core::repository::WalletRepository;
-use smolder_core::{encrypt_private_key, NewWallet, Wallet};
+use smolder_core::encrypt_private_key;
+use smolder_db::{NewWallet, Wallet, WalletRepository};
 
 use crate::server::AppState;
 

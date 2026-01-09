@@ -6,12 +6,12 @@ use std::path::Path;
 use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 use console::style;
-use smolder_core::{NewContract, NewDeployment, NewNetwork};
+use smolder_db::{NewContract, NewDeployment, NewNetwork};
 
 use crate::config::FoundryConfig;
-use crate::db::Database;
 use crate::forge::{BroadcastOutput, BroadcastParser, ForgeBroadcastParser};
 use crate::rpc::get_chain_id;
+use smolder_db::Database;
 
 /// Sync deployments from broadcast directory
 #[derive(Args)]

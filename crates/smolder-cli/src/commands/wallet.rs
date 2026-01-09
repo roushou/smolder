@@ -5,9 +5,10 @@ use clap::{Args, Subcommand};
 use color_eyre::eyre::{eyre, Result};
 use console::style;
 use dialoguer::{Confirm, Password};
-use smolder_core::{encrypt_private_key, NewWallet};
+use smolder_core::encrypt_private_key;
+use smolder_db::NewWallet;
 
-use crate::db::Database;
+use smolder_db::Database;
 
 /// Manage wallets for signing transactions
 #[derive(Args)]

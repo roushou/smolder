@@ -5,8 +5,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use smolder_core::repository::{DeploymentFilter, DeploymentRepository};
-use smolder_core::DeploymentView;
+use smolder_db::{DeploymentFilter, DeploymentRepository, DeploymentView};
 
 use crate::server::AppState;
 

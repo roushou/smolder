@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::db::Database;
 use crate::forge::{ArtifactLoader, FileSystemArtifactLoader};
+use smolder_db::Database;
 
 /// Application state shared across handlers
 ///

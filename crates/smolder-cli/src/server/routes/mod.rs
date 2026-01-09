@@ -31,10 +31,10 @@ pub fn create_router(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use axum::{body::Body, http::Request, Router};
-    use smolder_core::{Contract, DeploymentView, Network, NewContract, NewDeployment, NewNetwork};
+    use smolder_db::{
+        Contract, Database, DeploymentView, Network, NewContract, NewDeployment, NewNetwork,
+    };
     use tower::ServiceExt;
-
-    use crate::db::Database;
 
     async fn setup_test_app() -> Router {
         let db = Database::connect_to(":memory:").await.unwrap();

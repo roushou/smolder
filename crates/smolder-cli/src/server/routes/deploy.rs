@@ -7,10 +7,11 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
-use smolder_core::repository::{
-    ContractRepository, DeploymentRepository, NetworkRepository, WalletRepository,
+use smolder_core::{decrypt_private_key, ParamInfo};
+use smolder_db::{
+    ContractRepository, DeploymentRepository, NetworkRepository, NewContract, NewDeployment,
+    WalletRepository,
 };
-use smolder_core::{decrypt_private_key, NewContract, NewDeployment, ParamInfo};
 
 use crate::server::AppState;
 

@@ -4,7 +4,7 @@ use clap::Args;
 use color_eyre::eyre::Result;
 use console::style;
 
-use crate::db::Database;
+use smolder_db::Database;
 
 /// List all deployments
 #[derive(Args)]

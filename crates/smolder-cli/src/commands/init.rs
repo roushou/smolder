@@ -7,7 +7,7 @@ use color_eyre::eyre::{eyre, Result};
 use console::style;
 
 use crate::config::FoundryConfig;
-use crate::db::Database;
+use smolder_db::Database;
 
 const DB_FILE: &str = "smolder.db";
 

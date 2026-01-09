@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
 };
 use serde::Serialize;
-use smolder_core::repository::ContractRepository;
+use smolder_db::ContractRepository;
 
 use crate::forge::{ArtifactDetails, ArtifactInfo};
 use crate::server::AppState;

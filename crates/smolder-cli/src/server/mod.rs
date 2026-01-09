@@ -7,7 +7,7 @@ mod static_files;
 pub use error::{ApiError, ApiResult};
 pub use state::AppState;
 
-use crate::db::Database;
+use smolder_db::Database;
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
 

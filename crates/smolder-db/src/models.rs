@@ -1,3 +1,8 @@
+//! Database entity models
+//!
+//! This module contains all the entity structs used for database operations,
+//! including both read models (with `FromRow`) and write models (New* structs).
+
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 

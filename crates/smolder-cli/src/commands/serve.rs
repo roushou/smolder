@@ -4,8 +4,8 @@ use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 use console::style;
 
-use crate::db::Database;
 use crate::server::ServerConfig;
+use smolder_db::Database;
 
 const DB_FILE: &str = "smolder.db";
 

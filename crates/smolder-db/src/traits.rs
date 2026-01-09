@@ -7,12 +7,13 @@
 
 use async_trait::async_trait;
 
-use crate::error::Result;
+use smolder_core::error::Result;
+use smolder_core::types::{ChainId, ContractId, DeploymentId, NetworkId, WalletId};
+
 use crate::models::{
     CallHistory, CallHistoryUpdate, CallHistoryView, Contract, Deployment, DeploymentView, Network,
     NewCallHistory, NewContract, NewDeployment, NewNetwork, NewWallet, Wallet, WalletWithKey,
 };
-use crate::types::{ChainId, ContractId, DeploymentId, NetworkId, WalletId};
 
 // =============================================================================
 // Filter Types
