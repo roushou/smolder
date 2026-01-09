@@ -30,11 +30,13 @@ pub use smolder_core::types::{
     CallType, ChainId, ContractId, DeploymentId, NetworkId, TransactionStatus, WalletId,
 };
 
-use smolder_core::Result;
+use smolder_core::{Result, SmolderDir};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use std::path::Path;
 use std::str::FromStr;
 
-const DEFAULT_DB_FILE: &str = "smolder.db";
+/// The database filename within the smolder directory
+pub const DB_FILENAME: &str = "smolder.db";
 
 /// SQLite database connection and repository implementation
 pub struct Database {
@@ -42,14 +44,28 @@ pub struct Database {
 }
 
 impl Database {
-    /// Connect to the default database file (smolder.db)
+    /// Check if the database exists in the default smolder directory
+    pub fn exists() -> bool {
+        let dir = SmolderDir::new();
+        dir.join(DB_FILENAME).exists()
+    }
+
+    /// Connect to the default database file (`.smolder/smolder.db`)
     pub async fn connect() -> Result<Self> {
-        Self::connect_to(DEFAULT_DB_FILE).await
+        let dir = SmolderDir::new();
+        Self::connect_with(&dir).await
+    }
+
+    /// Connect using a specific smolder directory
+    pub async fn connect_with(dir: &SmolderDir) -> Result<Self> {
+        let path = dir.join(DB_FILENAME);
+        Self::connect_to(&path).await
     }
 
     /// Connect to a specific database file
-    pub async fn connect_to(path: &str) -> Result<Self> {
-        let options = SqliteConnectOptions::from_str(path)
+    pub async fn connect_to<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path_str = path.as_ref().to_str().unwrap_or(".smolder/smolder.db");
+        let options = SqliteConnectOptions::from_str(path_str)
             .map_err(smolder_core::Error::Database)?
             .create_if_missing(true)
             .foreign_keys(true);

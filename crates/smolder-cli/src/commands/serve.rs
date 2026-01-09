@@ -3,11 +3,9 @@
 use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 use console::style;
-
-use crate::server::ServerConfig;
 use smolder_db::Database;
 
-const DB_FILE: &str = "smolder.db";
+use crate::server::ServerConfig;
 
 /// Start the web server for the dashboard UI
 #[derive(Args)]
@@ -23,10 +21,10 @@ pub struct ServeCommand {
 
 impl ServeCommand {
     pub async fn run(self) -> Result<()> {
-        // Check if database exists
-        if !std::path::Path::new(DB_FILE).exists() {
+        // Check if smolder is initialized
+        if !Database::exists() {
             return Err(eyre!(
-                "Database not found. Run {} first.",
+                "Smolder is not initialized. Run {} first.",
                 style("smolder init").yellow()
             ));
         }

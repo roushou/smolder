@@ -5,11 +5,10 @@ use std::path::Path;
 use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 use console::style;
-
-use crate::config::FoundryConfig;
+use smolder_core::SmolderDir;
 use smolder_db::Database;
 
-const DB_FILE: &str = "smolder.db";
+use crate::config::FoundryConfig;
 
 /// Initialize smolder in a Foundry project
 #[derive(Args)]
@@ -25,17 +24,22 @@ impl InitCommand {
         }
 
         // Check if already initialized
-        if Path::new(DB_FILE).exists() {
+        if Database::exists() {
             return Err(eyre!(
                 "Smolder is already initialized in this project ({} exists)",
-                DB_FILE
+                SmolderDir::NAME
             ));
         }
+
+        // Create .smolder/ directory
+        let dir = SmolderDir::new();
+        dir.create()?;
+        println!("{} Created {}/", style("✓").green(), SmolderDir::NAME);
 
         // Create and initialize database
         let db = Database::connect().await?;
         db.init_schema().await?;
-        println!("{} Created {}", style("✓").green(), DB_FILE);
+        println!("{} Initialized database", style("✓").green());
 
         // Optionally add to .gitignore
         add_to_gitignore()?;
@@ -62,11 +66,15 @@ impl InitCommand {
 
 fn add_to_gitignore() -> Result<()> {
     let gitignore_path = Path::new(".gitignore");
-    let entry = "smolder.db";
+    let entry = SmolderDir::NAME;
 
     if gitignore_path.exists() {
         let content = std::fs::read_to_string(gitignore_path)?;
-        if !content.lines().any(|line| line.trim() == entry) {
+        // Check for both `.smolder` and `.smolder/` patterns
+        let has_entry = content
+            .lines()
+            .any(|line| line.trim() == entry || line.trim() == format!("{}/", entry));
+        if !has_entry {
             let mut new_content = content;
             if !new_content.ends_with('\n') {
                 new_content.push('\n');
