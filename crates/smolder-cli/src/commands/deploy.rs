@@ -5,7 +5,7 @@ use std::process::Command;
 use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 use console::style;
-use smolder_db::{NewContract, NewDeployment, NewNetwork};
+use smolder_db::{ChainId, NewContract, NewDeployment, NewNetwork};
 
 use crate::config::FoundryConfig;
 use crate::forge::{BroadcastParser, ForgeBroadcastParser};
@@ -101,7 +101,7 @@ impl DeployCommand {
         let network_id = db
             .upsert_network(&NewNetwork {
                 name: network.name.clone(),
-                chain_id: chain_id as i64,
+                chain_id: ChainId::from(chain_id),
                 rpc_url: network.rpc_url.clone(),
                 explorer_url: network.explorer_url.clone(),
             })

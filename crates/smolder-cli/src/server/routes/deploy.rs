@@ -9,8 +9,8 @@ use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use smolder_core::{decrypt_private_key, ParamInfo};
 use smolder_db::{
-    ContractRepository, DeploymentRepository, NetworkRepository, NewContract, NewDeployment,
-    WalletRepository,
+    ContractRepository, DeploymentId, DeploymentRepository, NetworkRepository, NewContract,
+    NewDeployment, WalletRepository,
 };
 
 use crate::server::AppState;
@@ -34,7 +34,7 @@ struct DeployRequest {
 struct DeployResponse {
     tx_hash: String,
     contract_address: Option<String>,
-    deployment_id: Option<i64>,
+    deployment_id: Option<DeploymentId>,
 }
 
 async fn deploy_contract(

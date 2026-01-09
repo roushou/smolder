@@ -13,11 +13,11 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use smolder_core::{abi, decrypt_private_key, DeploymentId};
+use smolder_core::{abi, decrypt_private_key};
 use smolder_db::{
-    CallHistoryFilter, CallHistoryRepository, CallHistoryUpdate, CallHistoryView,
-    DeploymentRepository, DeploymentView, Network, NetworkRepository, NewCallHistory,
-    WalletRepository, WalletWithKey,
+    CallHistoryFilter, CallHistoryRepository, CallHistoryUpdate, CallHistoryView, CallType,
+    DeploymentId, DeploymentRepository, DeploymentView, Network, NetworkRepository, NewCallHistory,
+    TransactionStatus, WalletId, WalletRepository, WalletWithKey,
 };
 
 use crate::server::AppState;
@@ -178,12 +178,12 @@ async fn execute_send(
 
     let history_id = record_call_history(
         &state,
-        id,
+        deployment.id,
         Some(wallet.id),
         &payload.function_name,
         &function.signature(),
         &payload.params,
-        "write",
+        CallType::Write,
     )
     .await?;
 
@@ -217,7 +217,7 @@ async fn execute_send(
     })?;
 
     // Update history with pending tx
-    update_call_history_tx(&state, history_id, &tx_hash, "pending").await?;
+    update_call_history_tx(&state, history_id, &tx_hash, TransactionStatus::Pending).await?;
 
     Ok(Json(SendResponse {
         tx_hash,
@@ -501,12 +501,12 @@ async fn execute_transaction(
 
 async fn record_call_history(
     state: &AppState,
-    deployment_id: i64,
-    wallet_id: Option<i64>,
+    deployment_id: DeploymentId,
+    wallet_id: Option<WalletId>,
     function_name: &str,
     function_signature: &str,
     params: &[serde_json::Value],
-    call_type: &str,
+    call_type: CallType,
 ) -> Result<i64, (StatusCode, String)> {
     let params_json = serde_json::to_string(params)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -517,7 +517,7 @@ async fn record_call_history(
         function_name: function_name.to_string(),
         function_signature: function_signature.to_string(),
         input_params: params_json,
-        call_type: call_type.to_string(),
+        call_type,
     };
 
     let history = CallHistoryRepository::create(state.db(), &entry)
@@ -531,7 +531,7 @@ async fn update_call_history_tx(
     state: &AppState,
     id: i64,
     tx_hash: &str,
-    status: &str,
+    status: TransactionStatus,
 ) -> Result<(), (StatusCode, String)> {
     let update = CallHistoryUpdate {
         result: None,
@@ -539,7 +539,7 @@ async fn update_call_history_tx(
         block_number: None,
         gas_used: None,
         gas_price: None,
-        status: status.to_string(),
+        status,
         error_message: None,
     };
 
@@ -561,7 +561,7 @@ async fn update_call_history_error(
         block_number: None,
         gas_used: None,
         gas_price: None,
-        status: "failed".to_string(),
+        status: TransactionStatus::Failed,
         error_message: Some(error.to_string()),
     };
 

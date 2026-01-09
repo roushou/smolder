@@ -6,7 +6,7 @@ use std::path::Path;
 use clap::Args;
 use color_eyre::eyre::{eyre, Result};
 use console::style;
-use smolder_db::{NewContract, NewDeployment, NewNetwork};
+use smolder_db::{ChainId, NewContract, NewDeployment, NewNetwork};
 
 use crate::config::FoundryConfig;
 use crate::forge::{BroadcastOutput, BroadcastParser, ForgeBroadcastParser};
@@ -161,7 +161,7 @@ impl SyncCommand {
             let network_id = db
                 .upsert_network(&NewNetwork {
                     name: network_name.clone(),
-                    chain_id: broadcast_file.chain_id as i64,
+                    chain_id: ChainId::from(broadcast_file.chain_id),
                     rpc_url: rpc_url.clone(),
                     explorer_url: explorer_url.clone(),
                 })

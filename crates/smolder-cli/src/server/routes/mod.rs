@@ -32,7 +32,8 @@ pub fn create_router(state: AppState) -> Router {
 mod tests {
     use axum::{body::Body, http::Request, Router};
     use smolder_db::{
-        Contract, Database, DeploymentView, Network, NewContract, NewDeployment, NewNetwork,
+        ChainId, Contract, Database, DeploymentView, Network, NewContract, NewDeployment,
+        NewNetwork,
     };
     use tower::ServiceExt;
 
@@ -44,7 +45,7 @@ mod tests {
         let network_id = db
             .upsert_network(&NewNetwork {
                 name: "testnet".to_string(),
-                chain_id: 12345,
+                chain_id: ChainId(12345),
                 rpc_url: "https://rpc.test.xyz".to_string(),
                 explorer_url: Some("https://explorer.test.xyz".to_string()),
             })
@@ -118,7 +119,7 @@ mod tests {
 
         assert_eq!(networks.len(), 1);
         assert_eq!(networks[0].name, "testnet");
-        assert_eq!(networks[0].chain_id, 12345);
+        assert_eq!(networks[0].chain_id, ChainId(12345));
     }
 
     #[tokio::test]

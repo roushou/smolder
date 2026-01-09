@@ -24,6 +24,11 @@ pub use models::*;
 // Re-export traits for convenience
 pub use traits::*;
 
+// Re-export types from smolder-core for convenience
+pub use smolder_core::types::{
+    CallType, ChainId, ContractId, DeploymentId, NetworkId, TransactionStatus, WalletId,
+};
+
 use smolder_core::Result;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::str::FromStr;
@@ -70,11 +75,11 @@ impl Database {
     // =========================================================================
     // Convenience Methods
     // =========================================================================
-    // These methods provide a simpler API for CLI commands, returning plain
-    // types like i64 for IDs instead of full entity structs.
+    // These methods provide a simpler API for CLI commands, returning typed
+    // IDs for type safety.
 
     /// Insert or update a network, returning the network ID
-    pub async fn upsert_network(&self, network: &NewNetwork) -> Result<i64> {
+    pub async fn upsert_network(&self, network: &NewNetwork) -> Result<NetworkId> {
         let result = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO networks (name, chain_id, rpc_url, explorer_url)
@@ -93,11 +98,11 @@ impl Database {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(result)
+        Ok(NetworkId(result))
     }
 
     /// Insert or update a contract, returning the contract ID
-    pub async fn upsert_contract(&self, contract: &NewContract) -> Result<i64> {
+    pub async fn upsert_contract(&self, contract: &NewContract) -> Result<ContractId> {
         let result = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO contracts (name, source_path, abi, bytecode_hash)
@@ -115,11 +120,11 @@ impl Database {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(result)
+        Ok(ContractId(result))
     }
 
     /// Create a new deployment, returning the deployment ID
-    pub async fn create_deployment(&self, deployment: &NewDeployment) -> Result<i64> {
+    pub async fn create_deployment(&self, deployment: &NewDeployment) -> Result<DeploymentId> {
         // Mark previous deployments as not current
         sqlx::query(
             "UPDATE deployments SET is_current = FALSE WHERE contract_id = ? AND network_id = ?",
@@ -159,7 +164,7 @@ impl Database {
         .fetch_one(&self.pool)
         .await?;
 
-        Ok(id)
+        Ok(DeploymentId(id))
     }
 
     /// Get the current deployment view for a contract on a network
@@ -354,20 +359,20 @@ mod tests {
 
         let network = NewNetwork {
             name: "tempo-testnet".to_string(),
-            chain_id: 240240,
+            chain_id: ChainId(240240),
             rpc_url: "https://rpc.testnet.tempo.xyz".to_string(),
             explorer_url: Some("https://testnet.tempotestnetscan.io".to_string()),
         };
 
         let created = NetworkRepository::upsert(&db, &network).await.unwrap();
-        assert!(created.id > 0);
+        assert!(created.id.0 > 0);
 
         let fetched = NetworkRepository::get_by_name(&db, "tempo-testnet")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(fetched.name, "tempo-testnet");
-        assert_eq!(fetched.chain_id, 240240);
+        assert_eq!(fetched.chain_id, ChainId(240240));
         assert_eq!(fetched.rpc_url, "https://rpc.testnet.tempo.xyz");
     }
 
@@ -377,7 +382,7 @@ mod tests {
 
         let network1 = NewNetwork {
             name: "tempo".to_string(),
-            chain_id: 100,
+            chain_id: ChainId(100),
             rpc_url: "https://old.rpc".to_string(),
             explorer_url: None,
         };
@@ -386,7 +391,7 @@ mod tests {
 
         let network2 = NewNetwork {
             name: "tempo".to_string(),
-            chain_id: 200,
+            chain_id: ChainId(200),
             rpc_url: "https://new.rpc".to_string(),
             explorer_url: Some("https://explorer.xyz".to_string()),
         };
@@ -400,7 +405,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(fetched.chain_id, 200);
+        assert_eq!(fetched.chain_id, ChainId(200));
         assert_eq!(fetched.rpc_url, "https://new.rpc");
     }
 
@@ -412,7 +417,7 @@ mod tests {
             &db,
             &NewNetwork {
                 name: "alpha".to_string(),
-                chain_id: 1,
+                chain_id: ChainId(1),
                 rpc_url: "https://alpha".to_string(),
                 explorer_url: None,
             },
@@ -424,7 +429,7 @@ mod tests {
             &db,
             &NewNetwork {
                 name: "beta".to_string(),
-                chain_id: 2,
+                chain_id: ChainId(2),
                 rpc_url: "https://beta".to_string(),
                 explorer_url: None,
             },
@@ -450,7 +455,7 @@ mod tests {
         };
 
         let created = ContractRepository::upsert(&db, &contract).await.unwrap();
-        assert!(created.id > 0);
+        assert!(created.id.0 > 0);
 
         let fetched = ContractRepository::get_by_name(&db, "MyToken")
             .await
@@ -468,7 +473,7 @@ mod tests {
             &db,
             &NewNetwork {
                 name: "testnet".to_string(),
-                chain_id: 1,
+                chain_id: ChainId(1),
                 rpc_url: "https://rpc".to_string(),
                 explorer_url: None,
             },
@@ -538,7 +543,7 @@ mod tests {
             &db,
             &NewNetwork {
                 name: "net1".to_string(),
-                chain_id: 1,
+                chain_id: ChainId(1),
                 rpc_url: "https://net1".to_string(),
                 explorer_url: None,
             },
@@ -550,7 +555,7 @@ mod tests {
             &db,
             &NewNetwork {
                 name: "net2".to_string(),
-                chain_id: 2,
+                chain_id: ChainId(2),
                 rpc_url: "https://net2".to_string(),
                 explorer_url: None,
             },
