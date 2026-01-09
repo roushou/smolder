@@ -1,4 +1,6 @@
+mod artifacts;
 mod contracts;
+mod deploy;
 mod deployments;
 mod health;
 mod interact;
@@ -18,7 +20,9 @@ pub fn create_router(state: AppState) -> Router {
                 .merge(contracts::router())
                 .merge(deployments::router())
                 .merge(wallets::router())
-                .merge(interact::router()),
+                .merge(interact::router())
+                .merge(artifacts::router())
+                .merge(deploy::router()),
         )
         .with_state(state)
         .fallback(get(serve_static))

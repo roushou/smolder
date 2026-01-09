@@ -6,6 +6,7 @@ import {
 	Outlet,
 } from "@tanstack/react-router";
 import { Dashboard } from "./pages/dashboard";
+import { Deploy } from "./pages/deploy";
 import { DeploymentDetail } from "./pages/deployment-details";
 import { Wallets } from "./pages/wallets";
 
@@ -50,6 +51,12 @@ function RootLayout() {
 								className="text-sm text-text-muted transition-colors hover:text-text [&.active]:text-accent"
 							>
 								Deployments
+							</Link>
+							<Link
+								to="/deploy"
+								className="text-sm text-text-muted transition-colors hover:text-text [&.active]:text-accent"
+							>
+								Deploy
 							</Link>
 							<Link
 								to="/wallets"
@@ -101,11 +108,18 @@ const walletsRoute = createRoute({
 	component: Wallets,
 });
 
+const deployRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/deploy",
+	component: Deploy,
+});
+
 // Build route tree
 const routeTree = rootRoute.addChildren([
 	indexRoute,
 	deploymentRoute,
 	walletsRoute,
+	deployRoute,
 ]);
 
 // Create router

@@ -1,9 +1,13 @@
 import type {
+	ArtifactDetails,
+	ArtifactInfo,
 	CallHistory,
 	CallRequest,
 	CallResponse,
 	Contract,
 	Deployment,
+	DeployRequest,
+	DeployResponse,
 	FunctionsResponse,
 	HealthResponse,
 	Network,
@@ -85,4 +89,13 @@ export const api = {
 		remove: (name: string): Promise<void> =>
 			deleteRequest(`${API_BASE}/wallets/${name}`),
 	},
+
+	artifacts: {
+		list: (): Promise<ArtifactInfo[]> => fetchJson(`${API_BASE}/artifacts`),
+		get: (name: string): Promise<ArtifactDetails> =>
+			fetchJson(`${API_BASE}/artifacts/${encodeURIComponent(name)}`),
+	},
+
+	deploy: (request: DeployRequest): Promise<DeployResponse> =>
+		postJson(`${API_BASE}/deploy`, request),
 };

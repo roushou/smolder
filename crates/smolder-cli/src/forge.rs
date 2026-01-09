@@ -1,7 +1,7 @@
 use alloy::hex;
 use alloy::primitives::keccak256;
 use color_eyre::eyre::{eyre, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Represents the broadcast output from forge script
@@ -48,6 +48,15 @@ pub struct ContractArtifact {
 #[derive(Debug, Deserialize)]
 pub struct BytecodeObject {
     pub object: String,
+}
+
+/// Extended contract artifact with AST for source path detection
+#[derive(Debug, Deserialize)]
+struct ContractArtifactFull {
+    abi: serde_json::Value,
+    bytecode: BytecodeObject,
+    #[serde(default)]
+    ast: Option<serde_json::Value>,
 }
 
 /// Parsed deployment information
@@ -170,6 +179,290 @@ pub fn extract_deployments(broadcast: &BroadcastOutput) -> Result<Vec<ParsedDepl
     }
 
     Ok(deployments)
+}
+
+/// Information about a compiled artifact
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtifactInfo {
+    pub name: String,
+    pub source_path: String,
+    pub has_constructor: bool,
+    pub has_bytecode: bool,
+}
+
+/// Detailed artifact information for deployment
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtifactDetails {
+    pub name: String,
+    pub source_path: String,
+    pub abi: serde_json::Value,
+    pub constructor: Option<ConstructorInfo>,
+    pub has_bytecode: bool,
+}
+
+/// Constructor information
+#[derive(Debug, Clone, Serialize)]
+pub struct ConstructorInfo {
+    pub inputs: Vec<ConstructorInput>,
+    pub state_mutability: String,
+}
+
+/// Constructor input parameter
+#[derive(Debug, Clone, Serialize)]
+pub struct ConstructorInput {
+    pub name: String,
+    pub param_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub components: Option<Vec<ConstructorInput>>,
+}
+
+/// List all compiled artifacts from the out/ directory
+/// Only includes contracts from src/ directory (filters out tests, scripts, and libraries)
+pub fn list_artifacts() -> Result<Vec<ArtifactInfo>> {
+    let out_dir = Path::new("out");
+    if !out_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let src_dir = Path::new("src");
+    let mut artifacts = Vec::new();
+
+    // Iterate through directories in out/
+    for entry in std::fs::read_dir(out_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Skip non-directories
+        if !path.is_dir() {
+            continue;
+        }
+
+        // Get the directory name (e.g., "Counter.sol")
+        let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        // Skip build-info and other special directories
+        if dir_name.starts_with('.') || dir_name == "build-info" {
+            continue;
+        }
+
+        // Only include if the source file exists in src/ directory
+        // This filters out forge-std, OpenZeppelin, and other library contracts
+        if !source_exists_in_src(&src_dir, &dir_name) {
+            continue;
+        }
+
+        // Look for JSON files in this directory
+        for json_entry in std::fs::read_dir(&path)? {
+            let json_entry = json_entry?;
+            let json_path = json_entry.path();
+
+            // Only process .json files
+            if json_path.extension().map_or(true, |e| e != "json") {
+                continue;
+            }
+
+            // Get contract name from filename (e.g., "Counter.json" -> "Counter")
+            let contract_name = match json_path.file_stem().and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+
+            // Skip metadata files
+            if contract_name.ends_with(".metadata") {
+                continue;
+            }
+
+            // Try to parse the artifact
+            if let Ok(content) = std::fs::read_to_string(&json_path) {
+                if let Ok(artifact) = serde_json::from_str::<ContractArtifactFull>(&content) {
+                    let has_constructor = has_constructor_with_args(&artifact.abi);
+                    let has_bytecode =
+                        !artifact.bytecode.object.is_empty() && artifact.bytecode.object != "0x";
+
+                    // Skip artifacts without bytecode (interfaces, abstract contracts)
+                    if !has_bytecode {
+                        continue;
+                    }
+
+                    artifacts.push(ArtifactInfo {
+                        name: contract_name,
+                        source_path: dir_name.clone(),
+                        has_constructor,
+                        has_bytecode,
+                    });
+                }
+            }
+        }
+    }
+
+    // Sort by name
+    artifacts.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(artifacts)
+}
+
+/// Check if a source file exists in the src/ directory (including subdirectories)
+fn source_exists_in_src(src_dir: &Path, filename: &str) -> bool {
+    // Check directly in src/
+    if src_dir.join(filename).exists() {
+        return true;
+    }
+
+    // Check in subdirectories of src/
+    if let Ok(entries) = std::fs::read_dir(src_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if source_exists_in_src(&path, filename) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Get detailed artifact information
+pub fn get_artifact_details(name: &str) -> Result<ArtifactDetails> {
+    let artifact = load_artifact(name)?;
+
+    let has_bytecode = !artifact.bytecode.object.is_empty() && artifact.bytecode.object != "0x";
+
+    let constructor = extract_constructor(&artifact.abi);
+
+    // Try to find the source path
+    let source_path = find_artifact_source_path(name).unwrap_or_else(|| format!("{}.sol", name));
+
+    Ok(ArtifactDetails {
+        name: name.to_string(),
+        source_path,
+        abi: artifact.abi,
+        constructor,
+        has_bytecode,
+    })
+}
+
+/// Check if ABI has a constructor with arguments
+fn has_constructor_with_args(abi: &serde_json::Value) -> bool {
+    if let Some(items) = abi.as_array() {
+        for item in items {
+            if item.get("type").and_then(|t| t.as_str()) == Some("constructor") {
+                if let Some(inputs) = item.get("inputs").and_then(|i| i.as_array()) {
+                    return !inputs.is_empty();
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Extract constructor info from ABI
+fn extract_constructor(abi: &serde_json::Value) -> Option<ConstructorInfo> {
+    if let Some(items) = abi.as_array() {
+        for item in items {
+            if item.get("type").and_then(|t| t.as_str()) == Some("constructor") {
+                let inputs = item
+                    .get("inputs")
+                    .and_then(|i| i.as_array())
+                    .map(|inputs| {
+                        inputs
+                            .iter()
+                            .map(|input| parse_constructor_input(input))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let state_mutability = item
+                    .get("stateMutability")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("nonpayable")
+                    .to_string();
+
+                return Some(ConstructorInfo {
+                    inputs,
+                    state_mutability,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Parse a constructor input parameter
+fn parse_constructor_input(input: &serde_json::Value) -> ConstructorInput {
+    let name = input
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let param_type = input
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let components = input
+        .get("components")
+        .and_then(|c| c.as_array())
+        .map(|arr| arr.iter().map(|c| parse_constructor_input(c)).collect());
+
+    ConstructorInput {
+        name,
+        param_type,
+        components,
+    }
+}
+
+/// Find the source path for an artifact
+fn find_artifact_source_path(name: &str) -> Option<String> {
+    let out_dir = Path::new("out");
+    if !out_dir.exists() {
+        return None;
+    }
+
+    // Look for directories containing this artifact
+    for entry in std::fs::read_dir(out_dir).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        let dir_name = path.file_name()?.to_str()?;
+
+        // Check if this directory contains our artifact
+        let json_path = path.join(format!("{}.json", name));
+        if json_path.exists() {
+            return Some(dir_name.to_string());
+        }
+    }
+
+    None
+}
+
+/// Get the bytecode for an artifact
+pub fn get_artifact_bytecode(name: &str) -> Result<String> {
+    let artifact = load_artifact(name)?;
+
+    let bytecode = artifact
+        .bytecode
+        .object
+        .trim_start_matches("0x")
+        .to_string();
+
+    if bytecode.is_empty() {
+        return Err(eyre!(
+            "Artifact '{}' has no bytecode (may be an interface or abstract contract)",
+            name
+        ));
+    }
+
+    Ok(bytecode)
 }
 
 #[cfg(test)]

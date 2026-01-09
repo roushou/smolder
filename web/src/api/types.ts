@@ -104,3 +104,45 @@ export interface CallHistory {
 	created_at: string;
 	confirmed_at: string | null;
 }
+
+export interface ArtifactInfo {
+	name: string;
+	source_path: string;
+	has_constructor: boolean;
+	has_bytecode: boolean;
+	in_registry: boolean;
+}
+
+export interface ConstructorInput {
+	name: string;
+	param_type: string;
+	components?: ConstructorInput[];
+}
+
+export interface ConstructorInfo {
+	inputs: ConstructorInput[];
+	state_mutability: string;
+}
+
+export interface ArtifactDetails {
+	name: string;
+	source_path: string;
+	abi: unknown;
+	constructor: ConstructorInfo | null;
+	has_bytecode: boolean;
+	in_registry: boolean;
+}
+
+export interface DeployRequest {
+	artifact_name: string;
+	network_name: string;
+	wallet_name: string;
+	constructor_args: unknown[];
+	value?: string;
+}
+
+export interface DeployResponse {
+	tx_hash: string;
+	contract_address: string | null;
+	deployment_id: number | null;
+}
